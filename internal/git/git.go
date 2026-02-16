@@ -105,7 +105,7 @@ func (g *GitManager) CloneIfMissing(repoFullName string) error {
 
 	g.log.Warning("Repository not found, cloning from GitHub...")
 
-	repoURL := fmt.Sprintf("https://github.com/%s.git", repoFullName)
+	repoURL := fmt.Sprintf("git@github.com:%s.git", repoFullName)
 	g.log.Infof("Cloning from: %s", repoURL)
 
 	parentDir := filepath.Dir(g.repoDir)
