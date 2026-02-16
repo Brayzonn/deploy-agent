@@ -7,7 +7,10 @@ import (
 	"github.com/Brayzonn/deploy-agent/internal/build"
 	"github.com/Brayzonn/deploy-agent/internal/config"
 	"github.com/Brayzonn/deploy-agent/internal/git"
+	"github.com/Brayzonn/deploy-agent/internal/health"
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/nginx"
+	"github.com/Brayzonn/deploy-agent/internal/ssl"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
 )
 
@@ -36,6 +39,10 @@ func (e *Executor) Execute() error {
 	e.log.Infof("Starting deployment for %s", e.ctx.RepoName)
 	e.log.Infof("Branch: %s | Type: %s | Fullstack: %t", e.ctx.Branch, e.ctx.Config.ProjectType, e.ctx.Config.FullStack)
 
+	if err := e.git.CloneIfMissing(e.ctx.RepoFullName); err != nil {
+		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+	
 	// Validate git repository
 	if err := e.git.Validate(); err != nil {
 		return fmt.Errorf("git validation failed: %w", err)
@@ -143,23 +150,67 @@ func (e *Executor) deployClient() error {
 		return fmt.Errorf("client build failed: %w", err)
 	}
 
-	// Deploy to web root
-	if err := clientBuilder.Deploy(buildResult.OutputDir); err != nil {
+	if e.ctx.Config.Domain != "" {
+		nginxMgr := nginx.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.DomainAliases,
+			e.ctx.Config.WebRoot,
+			e.ctx.Config.ProjectType,
+			e.ctx.Config.Port,
+			e.log,
+		)
+		
+		if err := nginxMgr.Setup(); err != nil {
+			e.log.Warningf("Nginx setup failed: %v", err)
+		}
+
+		sslMgr := ssl.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.DomainAliases,
+			e.cfg.SSLEmail,
+			e.log,
+		)
+		
+		if err := sslMgr.Setup(); err != nil {
+			e.log.Warningf("SSL setup failed: %v", err)
+		}
+	}
+
+	// Deploy to web root (get backup path)
+	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
+	if err != nil {
 		return fmt.Errorf("client deployment failed: %w", err)
 	}
 
-	// Restart Nginx
-	clientBuilder.RestartNginx()
+	healthChecker := health.New(
+		e.ctx.Config.Domain,
+		0, 
+		"", 
+		e.ctx.Config.ProjectType,
+		e.log,
+	)
+
+	if err := healthChecker.Check(); err != nil {
+		e.log.Errorf("Health check failed: %v", err)
+		if backupDir != "" {
+			e.log.Warning("Attempting automatic rollback...")
+			if rollbackErr := clientBuilder.RestoreFromBackup(backupDir); rollbackErr != nil {
+				e.log.Errorf("Rollback failed: %v", rollbackErr)
+				return fmt.Errorf("deployment failed and rollback failed: health check error: %w, rollback error: %v", err, rollbackErr)
+			}
+			e.log.Success("Rollback completed - previous deployment restored")
+		}
+		return fmt.Errorf("deployment health check failed: %w", err)
+	}
 
 	return nil
 }
 
-// deployServer deploys a backend-only project
+//  deploys a backend-only project
 func (e *Executor) deployServer() error {
 	e.log.State(types.StateDeployingServer)
 	e.log.Info("Deploying server API...")
 
-	// Determine server directory
 	serverDir := filepath.Join(e.ctx.Config.RepoDir, e.ctx.Config.ServerDir)
 	e.log.Infof("Server directory: %s", serverDir)
 
@@ -178,60 +229,84 @@ func (e *Executor) deployServer() error {
 		return fmt.Errorf("server build failed: %w", err)
 	}
 
+	if e.ctx.Config.Domain != "" && e.ctx.Config.Port > 0 {
+		nginxMgr := nginx.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.DomainAliases,
+			"", 
+			e.ctx.Config.ProjectType,
+			e.ctx.Config.Port,
+			e.log,
+		)
+		
+		if err := nginxMgr.Setup(); err != nil {
+			e.log.Warningf("Nginx setup failed: %v", err)
+		}
+
+		sslMgr := ssl.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.DomainAliases,
+			e.cfg.SSLEmail,
+			e.log,
+		)
+		
+		if err := sslMgr.Setup(); err != nil {
+			e.log.Warningf("SSL setup failed: %v", err)
+		}
+	}
+
 	// Deploy with PM2
 	if err := serverBuilder.Deploy(serverDir); err != nil {
 		return fmt.Errorf("server deployment failed: %w", err)
 	}
 
 	e.log.Infof("Server build completed in %v", buildResult.Duration)
-	return nil
-}
 
-// deployFullstack deploys both frontend and backend
-func (e *Executor) deployFullstack() error {
-	e.log.State(types.StateDeployingFull)
-	e.log.Info("Deploying fullstack application...")
-
-	// Deploy server
-	e.log.Info("Step 1/2: Deploying server...")
-	serverDir := filepath.Join(e.ctx.Config.RepoDir, e.ctx.Config.ServerDir)
-	
-	serverBuilder := build.NewServerBuilder(
-		serverDir,
+	healthChecker := health.New(
+		e.ctx.Config.Domain,
+		e.ctx.Config.Port,
+		e.ctx.RepoName, 
 		e.ctx.Config.ProjectType,
-		e.ctx.RepoName,
-		e.ctx.Config.ServerEntry,
-		e.ctx.Config.PM2Ecosystem,
 		e.log,
 	)
 
-	serverBuildResult, err := serverBuilder.Build()
-	if err != nil {
-		return fmt.Errorf("server build failed: %w", err)
+	if err := healthChecker.Check(); err != nil {
+		e.log.Errorf("Health check failed: %v", err)
+		return fmt.Errorf("deployment health check failed: %w", err)
 	}
 
-	if err := serverBuilder.Deploy(serverDir); err != nil {
-		return fmt.Errorf("server deployment failed: %w", err)
-	}
-
-	e.log.Successf("Server deployed in %v", serverBuildResult.Duration)
-
-	// Deploy client
-	e.log.Info("Step 2/2: Deploying client...")
-	clientDir := filepath.Join(e.ctx.Config.RepoDir, e.ctx.Config.ClientDir)
-
-	clientBuilder := build.NewClientBuilder(clientDir, e.ctx.Config.WebRoot, e.log)
-	clientBuildResult, err := clientBuilder.Build()
-	if err != nil {
-		return fmt.Errorf("client build failed: %w", err)
-	}
-
-	if err := clientBuilder.Deploy(clientBuildResult.OutputDir); err != nil {
-		return fmt.Errorf("client deployment failed: %w", err)
-	}
-
-	clientBuilder.RestartNginx()
-
-	e.log.Successf("Client deployed in %v", clientBuildResult.Duration)
 	return nil
+}
+
+// deploy fullstack app
+func (e *Executor) deployFullstack() error {
+    e.log.State(types.StateDeployingFull)
+    e.log.Info("Deploying fullstack application...")
+
+    e.log.Info("Step 1/2: Deploying server...")
+    
+    originalDomain := e.ctx.Config.Domain
+    originalAliases := e.ctx.Config.DomainAliases  
+    
+    if e.ctx.Config.Domain != "" {
+        e.ctx.Config.Domain = "api." + e.ctx.Config.Domain
+        e.ctx.Config.DomainAliases = []string{} 
+    }
+
+    if err := e.deployServer(); err != nil {
+        e.ctx.Config.Domain = originalDomain 
+        e.ctx.Config.DomainAliases = originalAliases  
+        return err
+    }
+
+    e.ctx.Config.Domain = originalDomain
+    e.ctx.Config.DomainAliases = originalAliases  
+
+    e.log.Info("Step 2/2: Deploying client...")
+    if err := e.deployClient(); err != nil {
+        return err
+    }
+
+    e.log.Success("Fullstack deployment completed successfully!")
+    return nil
 }
