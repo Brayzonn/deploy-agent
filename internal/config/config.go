@@ -15,6 +15,7 @@ type Config struct {
 	BackupDir       string
 	VerboseLogDir   string
 	SlackWebhookURL string
+	SSLEmail        string  
 }
 
 func LoadConfig() *Config {
@@ -26,6 +27,7 @@ func LoadConfig() *Config {
 		BackupDir:       "/var/tmp/deployment-backups",
 		VerboseLogDir:   filepath.Join(homeDir, "logs", "deployments"),
 		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK_URL"),
+		SSLEmail:        os.Getenv("SSL_EMAIL"),
 	}
 }
 

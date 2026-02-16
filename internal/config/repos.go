@@ -39,15 +39,28 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 			ServerDir:   "server",
 			ServerEntry: "app.js",
 		},
-		"MEDHUB": {
-			Name:        "MEDHUB",
-			RepoDir:     fmt.Sprintf("/home/zoney/%s", "MEDHUB"),
-			WebRoot:     fmt.Sprintf("/var/www/html/%s", "MEDHUB"),
+		"notifykit": {
+			Name:        "notifykit",
+			RepoDir:     fmt.Sprintf("/home/zoney/%s", "notifykit"),
+			WebRoot:     fmt.Sprintf("/var/www/html/%s", "notifykit"),
 			ProjectType: types.ProjectTypeAPITS,
 			FullStack:   false,
-			ClientDir:   "client",
 			ServerDir:   "server",
+			ServerEntry: "main.js",
+			Domain:       "api.notifykit.dev",               
+    		Port:         3000,            
+			PM2Ecosystem: "ecosystem.config.js",
+		},
+		"notifykit-web": {
+			Name:        "notifykit-web",
+			RepoDir:     fmt.Sprintf("/home/zoney/%s", "notifykit-web"),
+			WebRoot:     fmt.Sprintf("/var/www/html/%s", "notifykit-web"),
+			ProjectType: types.ProjectTypeClient,
+			FullStack:   false,
+			ClientDir:   "client",
 			ServerEntry: "app.js",
+			Domain:        "notifykit.dev",                    
+    		DomainAliases: []string{"www.notifykit.dev"},  
 		},
 	}
 

@@ -33,6 +33,9 @@ type RepoConfig struct {
 	ServerDir     string
 	ServerEntry   string
 	PM2Ecosystem  string
+	Domain        string   
+	DomainAliases []string 
+	Port          int      
 }
 
 type DeploymentContext struct {
