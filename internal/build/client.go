@@ -46,31 +46,37 @@ func (c *ClientBuilder) Build() (*types.BuildOutput, error) {
 	return result, nil
 }
 
-//  deploy the built client to the web root
-func (c *ClientBuilder) Deploy(buildOutput string) error {
+//  deploys the built client to the web root and returns backup path
+func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 	c.log.Info("Deploying client to web root...")
 
 	// Validate web root path 
 	if c.webRoot == "" || c.webRoot == "/" || c.webRoot == "/home" {
-		return fmt.Errorf("refusing to deploy: webRoot is set to a dangerous value: '%s'", c.webRoot)
+		return "", fmt.Errorf("refusing to deploy: webRoot is set to a dangerous value: '%s'", c.webRoot)
 	}
+
+	// Create backup and capture the path
+	timestamp := time.Now().Format("20060102_150405")
+	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s", 
+		filepath.Base(c.webRoot), timestamp)
 
 	if err := c.backupWebRoot(); err != nil {
 		c.log.Warningf("Backup failed: %v", err)
+		backupDir = "" 
 	}
 
 	c.log.Infof("Clearing web root: %s", c.webRoot)
 	if err := c.clearWebRoot(); err != nil {
-		return fmt.Errorf("failed to clear web root: %w", err)
+		return "", fmt.Errorf("failed to clear web root: %w", err)
 	}
 
 	c.log.Info("Copying files to web root...")
 	if err := c.copyToWebRoot(buildOutput); err != nil {
-		return fmt.Errorf("failed to copy files to web root: %w", err)
+		return "", fmt.Errorf("failed to copy files to web root: %w", err)
 	}
 
 	c.log.Success("Client deployed successfully")
-	return nil
+	return backupDir, nil  
 }
 
 //  create a backup of the current web root
@@ -163,6 +169,37 @@ func (c *ClientBuilder) copyToWebRoot(buildOutput string) error {
 		return fmt.Errorf("copy failed: %w\nOutput: %s", err, string(output))
 	}
 
+	return nil
+}
+
+//  restores the previous deployment from backup
+func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
+	if backupDir == "" {
+		return fmt.Errorf("no backup directory provided")
+	}
+
+	c.log.Warning("Restoring previous deployment from backup...")
+
+	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
+		return fmt.Errorf("backup directory does not exist: %s", backupDir)
+	}
+
+	c.log.Info("Clearing broken deployment...")
+	if err := c.clearWebRoot(); err != nil {
+		return fmt.Errorf("failed to clear web root: %w", err)
+	}
+
+	c.log.Info("Copying backup files to web root...")
+	cmd := exec.Command("cp", "-r", backupDir+"/.", c.webRoot+"/")
+	
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to restore backup: %w\nOutput: %s", err, string(output))
+	}
+
+	c.RestartNginx()
+
+	c.log.Success("Previous deployment restored successfully")
 	return nil
 }
 

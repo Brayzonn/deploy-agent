@@ -17,7 +17,6 @@ type Builder struct {
 	log     *logger.Logger
 }
 
-// New creates a new Builder
 func New(workDir string, log *logger.Logger) *Builder {
 	return &Builder{
 		workDir: workDir,
@@ -29,7 +28,7 @@ func New(workDir string, log *logger.Logger) *Builder {
 func (b *Builder) InstallDependencies() error {
 	b.log.Info("Installing dependencies...")
 
-	// Check if package-lock.json exists
+
 	lockFile := filepath.Join(b.workDir, "package-lock.json")
 	var cmd *exec.Cmd
 	
@@ -55,13 +54,11 @@ func (b *Builder) InstallDependencies() error {
 func (b *Builder) ScriptExists(scriptName string) (bool, error) {
     packageJSON := filepath.Join(b.workDir, "package.json")
     
-    // Read the file
     data, err := os.ReadFile(packageJSON)
     if err != nil {
         return false, fmt.Errorf("failed to read package.json: %w", err)
     }
 
-    // Parse JSON
     var pkg struct {
         Scripts map[string]string `json:"scripts"`
     }
