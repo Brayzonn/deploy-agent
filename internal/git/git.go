@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
@@ -92,6 +93,33 @@ func (g *GitManager) Fetch() error {
 		return fmt.Errorf("failed to fetch from GitHub: %w", err)
 	}
 
+	return nil
+}
+
+//  clone the repository if it doesn't exist
+func (g *GitManager) CloneIfMissing(repoFullName string) error {
+	if _, err := os.Stat(g.repoDir); err == nil {
+		g.log.Info("Repository already exists, skipping clone")
+		return nil
+	}
+
+	g.log.Warning("Repository not found, cloning from GitHub...")
+
+	repoURL := fmt.Sprintf("https://github.com/%s.git", repoFullName)
+	g.log.Infof("Cloning from: %s", repoURL)
+
+	parentDir := filepath.Dir(g.repoDir)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory: %w", err)
+	}
+
+	cmd := exec.Command("git", "clone", repoURL, g.repoDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
+	}
+
+	g.log.Successf("Repository cloned successfully to %s", g.repoDir)
 	return nil
 }
 
