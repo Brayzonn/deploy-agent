@@ -2,7 +2,6 @@ package ssl
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -26,10 +25,11 @@ func New(domain string, domainAliases []string, email string, log *logger.Logger
 	}
 }
 
-//  check if SSL certificate already exists
 func (s *SSLManager) CertExists() bool {
 	certPath := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", s.domain)
-	_, err := os.Stat(certPath)
+	
+	cmd := exec.Command("sudo", "test", "-f", certPath)
+	err := cmd.Run()
 	return err == nil
 }
 
@@ -40,7 +40,7 @@ func (s *SSLManager) RequestCertificate() error {
 		return nil
 	}
 
-	s.log.Info("Requesting SSL certificate from Let's Encrypt...")
+	s.log.Info("Requesting NEW SSL certificate from Let's Encrypt...")
 
 	// Build domain list: -d domain -d alias1 -d alias2
 	domains := []string{"-d", s.domain}
@@ -66,7 +66,6 @@ func (s *SSLManager) RequestCertificate() error {
 	// Add domains
 	args = append(args, domains...)
 
-	// Run certbot with sudo
 	cmd := exec.Command("sudo", args...)
 	output, err := cmd.CombinedOutput()
 
