@@ -37,7 +37,8 @@ func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *
 func (e *Executor) Execute() error {
 	e.log.State(types.StateStarting)
 	e.log.Infof("Starting deployment for %s", e.ctx.RepoName)
-	e.log.Infof("Branch: %s | Type: %s | Fullstack: %t", e.ctx.Branch, e.ctx.Config.ProjectType, e.ctx.Config.FullStack)
+	e.log.Infof("Branch: %s | Type: %s | Docker: %t | Fullstack: %t", 
+		e.ctx.Branch, e.ctx.Config.ProjectType, e.ctx.Config.UseDocker, e.ctx.Config.FullStack)
 
 	if err := e.git.CloneIfMissing(e.ctx.RepoFullName); err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
@@ -119,6 +120,12 @@ func (e *Executor) handleUncommittedChanges() error {
 
 //  handle the actual deployment based on project type
 func (e *Executor) deploy() error {
+	// Check if Docker deployment
+	if e.ctx.Config.UseDocker {
+		return e.deployDocker()
+	}
+
+	// Traditional deployments
 	if e.ctx.Config.FullStack {
 		return e.deployFullstack()
 	}
@@ -128,6 +135,113 @@ func (e *Executor) deploy() error {
 	}
 
 	return e.deployServer()
+}
+
+//  deploy using Docker
+func (e *Executor) deployDocker() error {
+	e.log.State(types.StateBuildingDocker)
+	e.log.Info("Deploying with Docker...")
+
+	workDir := e.ctx.Config.RepoDir
+	if e.ctx.Config.ServerDir != "" && e.ctx.Config.ServerDir != "." {
+		workDir = filepath.Join(e.ctx.Config.RepoDir, e.ctx.Config.ServerDir)
+	}
+
+	e.log.Infof("Docker directory: %s", workDir)
+	e.log.Infof("Compose file: %s", e.ctx.Config.DockerComposeFile)
+	e.log.Infof("Env file: %s", e.ctx.Config.DockerEnvFile)
+
+	dockerBuilder := build.NewDockerBuilder(
+		workDir,
+		e.ctx.Config.DockerComposeFile,
+		e.ctx.Config.DockerEnvFile,
+		e.log,
+	)
+
+	buildResult, err := dockerBuilder.Build()
+	if err != nil {
+		e.log.Errorf("Docker build failed: %v", err)
+		return fmt.Errorf("docker build failed: %w", err)
+	}
+
+	e.log.Successf("Docker build completed in %v", buildResult.Duration)
+
+	e.log.State(types.StateDeployingDocker)
+	if err := dockerBuilder.Deploy(); err != nil {
+		e.log.Errorf("Docker deployment failed: %v", err)
+		
+		logs, _ := dockerBuilder.GetLogs("", 50)
+		e.log.Error("Container logs:")
+		e.log.Error(logs)
+		
+		e.log.Warning("Attempting rollback...")
+		dockerBuilder.Rollback()
+		return fmt.Errorf("docker deployment failed: %w", err)
+	}
+
+	if e.ctx.Config.RequiresMigrations {
+		e.log.State(types.StateRunningMigrations)
+		if err := dockerBuilder.RunMigrations(e.ctx.Config.MigrationCommand); err != nil {
+			e.log.Errorf("Migrations failed: %v", err)
+			
+			logs, _ := dockerBuilder.GetLogs("api", 100)
+			e.log.Error("API container logs:")
+			e.log.Error(logs)
+			
+			return fmt.Errorf("migrations failed: %w", err)
+		}
+		e.log.Success("Database migrations completed")
+	}
+
+	if e.ctx.Config.Domain != "" && e.ctx.Config.Port > 0 {
+		nginxMgr := nginx.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.DomainAliases,
+			"",
+			e.ctx.Config.ProjectType,
+			e.ctx.Config.Port,
+			e.log,
+		)
+		
+		if err := nginxMgr.Setup(); err != nil {
+			e.log.Warningf("Nginx setup failed: %v", err)
+		}
+
+		sslMgr := ssl.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.DomainAliases,
+			e.cfg.SSLEmail,
+			e.log,
+		)
+		
+		if err := sslMgr.Setup(); err != nil {
+			e.log.Warningf("SSL setup failed: %v", err)
+		}
+	}
+
+	if err := dockerBuilder.CheckHealth(); err != nil {
+		e.log.Errorf("Container health check failed: %v", err)
+		return fmt.Errorf("health check failed: %w", err)
+	}
+
+	if e.ctx.Config.HealthCheckURL != "" {
+		healthChecker := health.New(
+			e.ctx.Config.Domain,
+			e.ctx.Config.Port,
+			e.ctx.RepoName,
+			e.ctx.Config.ProjectType,
+			e.log,
+		)
+
+		if err := healthChecker.Check(); err != nil {
+			e.log.Warningf("HTTP health check failed: %v", err)
+		} else {
+			e.log.Success("HTTP health check passed")
+		}
+	}
+
+	e.log.Success("Docker deployment completed successfully!")
+	return nil
 }
 
 //  deploy a frontend-only project
