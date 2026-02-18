@@ -39,7 +39,7 @@ func (n *NginxManager) generateClientConfig() string {
 }`, serverNames, n.webRoot)
 }
 
-// generateAPIConfig creates nginx config for API reverse proxy
+//  create nginx config for API reverse proxy
 func (n *NginxManager) generateAPIConfig() string {
 	serverNames := n.domain
 	if len(n.domainAliases) > 0 {

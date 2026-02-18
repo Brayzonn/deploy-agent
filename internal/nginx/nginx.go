@@ -49,7 +49,7 @@ func (n *NginxManager) GenerateConfig() error {
 	switch n.projectType {
 	case types.ProjectTypeClient:
 		config = n.generateClientConfig()
-	case types.ProjectTypeAPIJS, types.ProjectTypeAPITS:
+	case types.ProjectTypeAPIJS, types.ProjectTypeAPITS, types.ProjectTypeDocker:
 		config = n.generateAPIConfig()
 	default:
 		return fmt.Errorf("unsupported project type for nginx: %s", n.projectType)
