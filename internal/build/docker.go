@@ -48,7 +48,7 @@ func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
 		d.log.Warningf("Env file not found: %s", d.envFile)
 	
 	}
-    cmd := exec.Command("docker-compose", "-f", d.composeFile, "build", "--no-cache")
+    cmd := exec.Command("docker-compose", "-f", d.composeFile, "build")
     cmd.Dir = d.workDir
 
     output, err := cmd.CombinedOutput()
@@ -56,6 +56,7 @@ func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
 
     if err != nil {
         d.log.Errorf("Docker build failed after %v", duration)
+		d.log.Error(string(output)) 
         return &types.BuildOutput{
             Success:  false,
             Duration: duration,
