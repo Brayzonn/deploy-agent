@@ -8,6 +8,7 @@ const (
 	ProjectTypeClient ProjectType = "CLIENT"
 	ProjectTypeAPIJS  ProjectType = "API_JS"
 	ProjectTypeAPITS  ProjectType = "API_TS"
+	ProjectTypeDocker ProjectType = "DOCKER"
 )
 
 type DeploymentState string
@@ -19,6 +20,9 @@ const (
 	StateDeployingServer DeploymentState = "DEPLOYING_SERVER"
 	StateDeployingClient DeploymentState = "DEPLOYING_CLIENT"
 	StateDeployingFull   DeploymentState = "DEPLOYING_FULLSTACK"
+	StateBuildingDocker  DeploymentState = "BUILDING_DOCKER"      
+	StateDeployingDocker DeploymentState = "DEPLOYING_DOCKER"     
+	StateRunningMigrations DeploymentState = "RUNNING_MIGRATIONS" 
 	StateSuccess         DeploymentState = "SUCCESS"
 	StateFailed          DeploymentState = "FAILED"
 )
@@ -36,6 +40,14 @@ type RepoConfig struct {
 	Domain        string   
 	DomainAliases []string 
 	Port          int      
+
+    UseDocker          bool   
+	DockerComposeFile  string 
+	DockerEnvFile      string 
+	RequiresMigrations bool   
+	MigrationCommand   string 
+	HealthCheckURL     string 
+	HealthCheckTimeout int    
 }
 
 type DeploymentContext struct {
@@ -55,4 +67,12 @@ type BuildOutput struct {
 	OutputDir string
 	Duration  time.Duration
 	Error     error
+}
+
+type DockerDeploymentResult struct {
+	ContainersStarted []string
+	ContainersFailed  []string
+	MigrationsRun     bool
+	HealthCheckPassed bool
+	Logs              string
 }
