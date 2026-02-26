@@ -36,7 +36,7 @@ func (h *HealthChecker) CheckHTTP() error {
 
 	h.log.Info("Performing HTTP health check...")
 
-	url := fmt.Sprintf("http://%s", h.domain)
+	url := fmt.Sprintf("http://%s/api/v1/health/simple", h.domain)
 	
 	// Retry logic
 	maxAttempts := 5
