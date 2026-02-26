@@ -98,6 +98,14 @@ func (h *HealthChecker) CheckPM2() error {
 }
 
 func (h *HealthChecker) Check() error {
+	if h.projectType == types.ProjectTypeDocker {
+		if err := h.CheckHTTP(); err != nil {
+			return err
+		}
+		h.log.Success("All health checks passed!")
+		return nil
+	}
+
 	if err := h.CheckPM2(); err != nil {
 		return err
 	}
