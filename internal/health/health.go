@@ -36,9 +36,13 @@ func (h *HealthChecker) CheckHTTP() error {
 
 	h.log.Info("Performing HTTP health check...")
 
-	url := fmt.Sprintf("http://%s/api/v1/health/simple", h.domain)
-	
-	// Retry logic
+	var url string
+	if h.projectType == types.ProjectTypeClient {
+		url = fmt.Sprintf("http://%s/", h.domain)
+	} else {
+		url = fmt.Sprintf("http://%s/api/v1/health/simple", h.domain)
+	}
+
 	maxAttempts := 5
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		resp, err := http.Get(url)
@@ -98,20 +102,23 @@ func (h *HealthChecker) CheckPM2() error {
 }
 
 func (h *HealthChecker) Check() error {
-	if h.projectType == types.ProjectTypeDocker {
+	switch h.projectType {
+	case types.ProjectTypeClient:
+		h.log.Info("Client deployment complete (no health checks required)")
+		return nil
+
+	case types.ProjectTypeDocker:
 		if err := h.CheckHTTP(); err != nil {
 			return err
 		}
-		h.log.Success("All health checks passed!")
-		return nil
-	}
 
-	if err := h.CheckPM2(); err != nil {
-		return err
-	}
-
-	if err := h.CheckHTTP(); err != nil {
-		return err
+	default: // server
+		if err := h.CheckPM2(); err != nil {
+			return err
+		}
+		if err := h.CheckHTTP(); err != nil {
+			return err
+		}
 	}
 
 	h.log.Success("All health checks passed!")
