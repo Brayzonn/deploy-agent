@@ -40,21 +40,30 @@ func (e *Executor) Execute() error {
 	e.log.Infof("Branch: %s | Type: %s | Docker: %t | Fullstack: %t", 
 		e.ctx.Branch, e.ctx.Config.ProjectType, e.ctx.Config.UseDocker, e.ctx.Config.FullStack)
 
-	if err := e.git.CloneIfMissing(e.ctx.RepoFullName); err != nil {
+	freshClone, err := e.git.CloneIfMissing(e.ctx.RepoFullName)
+	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 	
-	// Validate git repository
 	if err := e.git.Validate(); err != nil {
 		return fmt.Errorf("git validation failed: %w", err)
 	}
 
-	// Handle uncommitted changes
+	if freshClone {
+		e.log.Info("Fresh clone detected, proceeding directly to deployment...")
+		if err := e.deploy(); err != nil {
+			return err
+		}
+		e.log.State(types.StateSuccess)
+		e.log.Success("Deployment completed successfully!")
+		e.log.Successf("Deployed %s (%s) to %s branch", e.ctx.RepoName, e.ctx.Commit[:7], e.ctx.Branch)
+		return nil
+	}
+
 	if err := e.handleUncommittedChanges(); err != nil {
 		return err
 	}
 
-	// Fetch and check for updates
 	e.log.State(types.StateFetching)
 	if err := e.git.Fetch(); err != nil {
 		return fmt.Errorf("git fetch failed: %w", err)
@@ -73,7 +82,6 @@ func (e *Executor) Execute() error {
 		return nil
 	}
 
-	// Pull latest changes
 	e.log.State(types.StatePulling)
 	if err := e.git.Pull(); err != nil {
 		if e.stashed {
@@ -84,7 +92,6 @@ func (e *Executor) Execute() error {
 		return fmt.Errorf("git pull failed: %w", err)
 	}
 
-	// Restore stashed changes
 	if e.stashed {
 		e.git.PopStash()
 	}
