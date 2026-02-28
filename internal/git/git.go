@@ -96,11 +96,11 @@ func (g *GitManager) Fetch() error {
 	return nil
 }
 
-//  clone the repository if it doesn't exist
-func (g *GitManager) CloneIfMissing(repoFullName string) error {
+// Returns true if the repo was freshly cloned
+func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 	if _, err := os.Stat(g.repoDir); err == nil {
 		g.log.Info("Repository already exists, skipping clone")
-		return nil
+		return false, nil
 	}
 
 	g.log.Warning("Repository not found, cloning from GitHub...")
@@ -110,18 +110,20 @@ func (g *GitManager) CloneIfMissing(repoFullName string) error {
 
 	parentDir := filepath.Dir(g.repoDir)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
-		return fmt.Errorf("failed to create parent directory: %w", err)
+		return false, fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
 	cmd := exec.Command("git", "clone", repoURL, g.repoDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
+		return false, fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
 	}
 
 	g.log.Successf("Repository cloned successfully to %s", g.repoDir)
-	return nil
+	return true, nil
 }
+
+
 
 //  check if there are new commits to pull
 func (g *GitManager) CheckForUpdates() (bool, error) {
