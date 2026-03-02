@@ -36,6 +36,11 @@ func NewDockerBuilder(workDir, composeFile, envFile string, log *logger.Logger) 
 }
 
 func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
+    d.log.Info("Stopping any existing containers before build...")
+    stopCmd := exec.Command("docker-compose", "-f", d.composeFile, "down", "--remove-orphans", "--timeout", "30")
+    stopCmd.Dir = d.workDir
+    stopCmd.Run()
+    
     d.log.Info("Building Docker containers...")
     startTime := time.Now()
 
@@ -76,13 +81,6 @@ func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
 
 func (d *DockerBuilder) Deploy() error {
     d.log.Info("Deploying Docker containers...")
-
-    d.log.Info("Stopping existing containers...")
-    stopCmd := exec.Command("docker-compose", "-f", d.composeFile, "down", "--remove-orphans")
-    stopCmd.Dir = d.workDir
-    if err := stopCmd.Run(); err != nil {
-        d.log.Warning("Failed to stop containers (may not exist yet)")
-    }
 
     d.log.Info("Starting containers...")
     cmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--build")
