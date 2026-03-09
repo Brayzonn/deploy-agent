@@ -63,6 +63,16 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 			Domain:      "notifykit.dev",                    
     		DomainAliases: []string{"www.notifykit.dev"},  
 		},
+		"notifykit-admin": {
+			Name:        "notifykit-admin",
+			RepoDir:     fmt.Sprintf("/home/zoney/%s", "notifykit-admin"),
+			WebRoot:     fmt.Sprintf("/var/www/html/%s", "notifykit-admin"),
+			ProjectType: types.ProjectTypeClient,
+			FullStack:   false,
+			ClientDir:   ".",
+			Domain:      "admin.notifykit.dev",                   
+    		DomainAliases: []string{},  
+		},
 		"NotifyKit-Docs": {
 			Name:          "NotifyKit-Docs",
 			RepoDir:       fmt.Sprintf("/home/zoney/%s", "NotifyKit-Docs"),
