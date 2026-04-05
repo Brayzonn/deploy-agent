@@ -41,13 +41,18 @@ type RepoConfig struct {
 	DomainAliases []string 
 	Port          int      
 
-    UseDocker          bool   
-	DockerComposeFile  string 
-	DockerEnvFile      string 
-	RequiresMigrations bool   
-	MigrationCommand   string 
-	HealthCheckURL     string 
-	HealthCheckTimeout int    
+    UseDocker          bool
+	DockerComposeFile  string
+	DockerEnvFile      string
+	RequiresMigrations bool
+	MigrationCommand   string
+	HealthCheckURL     string
+	HealthCheckTimeout int
+
+	// Client fields — populated when a Docker project also has a frontend to serve via Nginx
+	ClientDomain        string
+	ClientDomainAliases []string
+	ClientWebRoot       string
 }
 
 type DeploymentContext struct {

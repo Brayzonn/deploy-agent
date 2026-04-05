@@ -248,6 +248,33 @@ func (e *Executor) deployDocker() error {
 	}
 
 	e.log.Success("Docker deployment completed successfully!")
+
+	// If this project also has a client to serve via Nginx, deploy it now
+	if e.ctx.Config.ClientWebRoot != "" {
+		e.log.Info("Deploying client application...")
+
+		origDomain := e.ctx.Config.Domain
+		origAliases := e.ctx.Config.DomainAliases
+		origWebRoot := e.ctx.Config.WebRoot
+		origType := e.ctx.Config.ProjectType
+
+		e.ctx.Config.Domain = e.ctx.Config.ClientDomain
+		e.ctx.Config.DomainAliases = e.ctx.Config.ClientDomainAliases
+		e.ctx.Config.WebRoot = e.ctx.Config.ClientWebRoot
+		e.ctx.Config.ProjectType = types.ProjectTypeClient
+
+		err := e.deployClient()
+
+		e.ctx.Config.Domain = origDomain
+		e.ctx.Config.DomainAliases = origAliases
+		e.ctx.Config.WebRoot = origWebRoot
+		e.ctx.Config.ProjectType = origType
+
+		if err != nil {
+			return fmt.Errorf("client deployment failed: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -297,31 +324,8 @@ func (e *Executor) deployClient() error {
 		}
 	}
 
-	// Deploy to web root (get backup path)
-	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
-	if err != nil {
+	if _, err := clientBuilder.Deploy(buildResult.OutputDir); err != nil {
 		return fmt.Errorf("client deployment failed: %w", err)
-	}
-
-	healthChecker := health.New(
-		e.ctx.Config.Domain,
-		0, 
-		"", 
-		e.ctx.Config.ProjectType,
-		e.log,
-	)
-
-	if err := healthChecker.Check(); err != nil {
-		e.log.Errorf("Health check failed: %v", err)
-		if backupDir != "" {
-			e.log.Warning("Attempting automatic rollback...")
-			if rollbackErr := clientBuilder.RestoreFromBackup(backupDir); rollbackErr != nil {
-				e.log.Errorf("Rollback failed: %v", rollbackErr)
-				return fmt.Errorf("deployment failed and rollback failed: health check error: %w, rollback error: %v", err, rollbackErr)
-			}
-			e.log.Success("Rollback completed - previous deployment restored")
-		}
-		return fmt.Errorf("deployment health check failed: %w", err)
 	}
 
 	return nil
