@@ -290,6 +290,7 @@ func (e *Executor) deployDocker() error {
 		}
 	}
 
+	dockerBuilder.CleanupOnSuccess()
 	e.log.Success("Docker deployment completed successfully!")
 
 	// If this project also has a client to serve via Nginx, deploy it now
