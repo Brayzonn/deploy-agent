@@ -15,11 +15,12 @@ import (
 )
 
 type Executor struct {
-	ctx    *types.DeploymentContext
-	cfg    *config.Config
-	log    *logger.Logger
-	git    *git.GitManager
-	stashed bool
+	ctx        *types.DeploymentContext
+	cfg        *config.Config
+	log        *logger.Logger
+	git        *git.GitManager
+	stashed    bool
+	prevCommit string // commit hash before pull, used for rollback
 }
 
 func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *Executor {
@@ -82,6 +83,12 @@ func (e *Executor) Execute() error {
 		return nil
 	}
 
+	if commit, err := e.git.GetCurrentCommit(); err == nil {
+		e.prevCommit = commit
+	} else {
+		e.log.Warningf("Could not capture pre-pull commit for rollback: %v", err)
+	}
+
 	e.log.State(types.StatePulling)
 	if err := e.git.Pull(); err != nil {
 		if e.stashed {
@@ -105,6 +112,37 @@ func (e *Executor) Execute() error {
 	e.log.Successf("Deployed %s (%s) to %s branch", e.ctx.RepoName, e.ctx.Commit[:7], e.ctx.Branch)
 
 	return nil
+}
+
+// rollbackGit resets the repo to prevCommit. Safe to call after any failure.
+func (e *Executor) rollbackGit() {
+	if e.prevCommit == "" {
+		e.log.Warning("No pre-pull commit recorded — cannot rollback git")
+		return
+	}
+	if err := e.git.ResetHard(e.prevCommit); err != nil {
+		e.log.Errorf("Git rollback failed: %v", err)
+	}
+}
+
+// rollbackServer resets git and restarts PM2 with the previous working build.
+func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string) {
+	e.log.Warning("Rolling back server deployment...")
+	e.rollbackGit()
+
+	e.log.Info("Rebuilding previous version...")
+	if _, err := builder.Build(); err != nil {
+		e.log.Errorf("Rollback build failed: %v", err)
+		return
+	}
+
+	e.log.Info("Restarting PM2 with previous version...")
+	if err := builder.Deploy(serverDir); err != nil {
+		e.log.Errorf("Rollback PM2 restart failed: %v", err)
+		return
+	}
+
+	e.log.Success("Server rolled back successfully")
 }
 
 // stash any uncommitted changes
@@ -190,11 +228,14 @@ func (e *Executor) deployDocker() error {
 		e.log.State(types.StateRunningMigrations)
 		if err := dockerBuilder.RunMigrations(e.ctx.Config.MigrationCommand); err != nil {
 			e.log.Errorf("Migrations failed: %v", err)
-			
+
 			logs, _ := dockerBuilder.GetLogs("api", 100)
 			e.log.Error("API container logs:")
 			e.log.Error(logs)
-			
+
+			e.log.Warning("Attempting rollback after migration failure...")
+			dockerBuilder.Rollback()
+
 			return fmt.Errorf("migrations failed: %w", err)
 		}
 		e.log.Success("Database migrations completed")
@@ -228,6 +269,8 @@ func (e *Executor) deployDocker() error {
 
 	if err := dockerBuilder.CheckHealth(); err != nil {
 		e.log.Errorf("Container health check failed: %v", err)
+		e.log.Warning("Attempting rollback after health check failure...")
+		dockerBuilder.Rollback()
 		return fmt.Errorf("health check failed: %w", err)
 	}
 
@@ -324,7 +367,12 @@ func (e *Executor) deployClient() error {
 		}
 	}
 
-	if _, err := clientBuilder.Deploy(buildResult.OutputDir); err != nil {
+	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
+	if err != nil {
+		e.log.Warning("Client deployment failed, attempting to restore backup...")
+		if restoreErr := clientBuilder.RestoreFromBackup(backupDir); restoreErr != nil {
+			e.log.Errorf("Backup restore failed: %v", restoreErr)
+		}
 		return fmt.Errorf("client deployment failed: %w", err)
 	}
 
@@ -351,6 +399,8 @@ func (e *Executor) deployServer() error {
 
 	buildResult, err := serverBuilder.Build()
 	if err != nil {
+		// Build failed — PM2 still serves old dist, just reset git
+		e.rollbackGit()
 		return fmt.Errorf("server build failed: %w", err)
 	}
 
@@ -358,12 +408,12 @@ func (e *Executor) deployServer() error {
 		nginxMgr := nginx.New(
 			e.ctx.Config.Domain,
 			e.ctx.Config.DomainAliases,
-			"", 
+			"",
 			e.ctx.Config.ProjectType,
 			e.ctx.Config.Port,
 			e.log,
 		)
-		
+
 		if err := nginxMgr.Setup(); err != nil {
 			e.log.Warningf("Nginx setup failed: %v", err)
 		}
@@ -374,7 +424,7 @@ func (e *Executor) deployServer() error {
 			e.cfg.SSLEmail,
 			e.log,
 		)
-		
+
 		if err := sslMgr.Setup(); err != nil {
 			e.log.Warningf("SSL setup failed: %v", err)
 		}
@@ -382,6 +432,7 @@ func (e *Executor) deployServer() error {
 
 	// Deploy with PM2
 	if err := serverBuilder.Deploy(serverDir); err != nil {
+		e.rollbackServer(serverBuilder, serverDir)
 		return fmt.Errorf("server deployment failed: %w", err)
 	}
 
@@ -390,13 +441,14 @@ func (e *Executor) deployServer() error {
 	healthChecker := health.New(
 		e.ctx.Config.Domain,
 		e.ctx.Config.Port,
-		e.ctx.RepoName, 
+		e.ctx.RepoName,
 		e.ctx.Config.ProjectType,
 		e.log,
 	)
 
 	if err := healthChecker.Check(); err != nil {
 		e.log.Errorf("Health check failed: %v", err)
+		e.rollbackServer(serverBuilder, serverDir)
 		return fmt.Errorf("deployment health check failed: %w", err)
 	}
 

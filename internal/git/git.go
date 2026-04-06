@@ -148,6 +148,22 @@ func (g *GitManager) CheckForUpdates() (bool, error) {
 	return local != remote, nil
 }
 
+// ResetHard resets the repo to a specific commit (used for rollback)
+func (g *GitManager) ResetHard(commit string) error {
+	g.log.Warningf("Resetting repository to commit %s...", commit[:7])
+
+	cmd := exec.Command("git", "reset", "--hard", commit)
+	cmd.Dir = g.repoDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git reset failed: %w\nOutput: %s", err, string(output))
+	}
+
+	g.log.Successf("Repository reset to %s", commit[:7])
+	return nil
+}
+
 //  pull latest changes from remote
 func (g *GitManager) Pull() error {
 	g.log.Info("Pulling latest changes from GitHub...")
