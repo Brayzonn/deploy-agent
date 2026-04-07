@@ -49,7 +49,7 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 			ServerDir:           "server",
 			RequiresMigrations:  true,
 			MigrationCommand:    "npm run db:migrate",
-			InfraServices:       []string{"db", "redis"},
+			InfraServices:       []string{"postgres", "redis"},
 			Domain:              "api.mines.zoneyhub.com",
 			Port:                4600,
 			HealthCheckURL:      "http://localhost:4600/api/v1/health",
