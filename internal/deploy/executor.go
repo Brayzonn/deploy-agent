@@ -211,34 +211,33 @@ func (e *Executor) deployDocker() error {
 
 	e.log.Successf("Docker build completed in %v", buildResult.Duration)
 
-	e.log.State(types.StateDeployingDocker)
-	if err := dockerBuilder.Deploy(); err != nil {
-		e.log.Errorf("Docker deployment failed: %v", err)
-		
-		logs, _ := dockerBuilder.GetLogs("", 50)
-		e.log.Error("Container logs:")
-		e.log.Error(logs)
-		
-		e.log.Warning("Attempting rollback...")
-		dockerBuilder.Rollback()
-		return fmt.Errorf("docker deployment failed: %w", err)
-	}
-
 	if e.ctx.Config.RequiresMigrations {
 		e.log.State(types.StateRunningMigrations)
+		if err := dockerBuilder.StartInfra(e.ctx.Config.InfraServices); err != nil {
+			e.log.Errorf("Failed to start infra services: %v", err)
+			dockerBuilder.Rollback()
+			return fmt.Errorf("infra startup failed: %w", err)
+		}
 		if err := dockerBuilder.RunMigrations(e.ctx.Config.MigrationCommand); err != nil {
 			e.log.Errorf("Migrations failed: %v", err)
-
-			logs, _ := dockerBuilder.GetLogs("api", 100)
-			e.log.Error("API container logs:")
-			e.log.Error(logs)
-
 			e.log.Warning("Attempting rollback after migration failure...")
 			dockerBuilder.Rollback()
-
 			return fmt.Errorf("migrations failed: %w", err)
 		}
 		e.log.Success("Database migrations completed")
+	}
+
+	e.log.State(types.StateDeployingDocker)
+	if err := dockerBuilder.Deploy(); err != nil {
+		e.log.Errorf("Docker deployment failed: %v", err)
+
+		logs, _ := dockerBuilder.GetLogs("", 50)
+		e.log.Error("Container logs:")
+		e.log.Error(logs)
+
+		e.log.Warning("Attempting rollback...")
+		dockerBuilder.Rollback()
+		return fmt.Errorf("docker deployment failed: %w", err)
 	}
 
 	if e.ctx.Config.Domain != "" && e.ctx.Config.Port > 0 {

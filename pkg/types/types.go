@@ -46,6 +46,7 @@ type RepoConfig struct {
 	DockerEnvFile      string
 	RequiresMigrations bool
 	MigrationCommand   string
+	InfraServices      []string
 	HealthCheckURL     string
 	HealthCheckTimeout int
 

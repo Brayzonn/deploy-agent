@@ -165,6 +165,27 @@ func (d *DockerBuilder) Deploy() error {
 	return nil
 }
 
+func (d *DockerBuilder) StartInfra(services []string) error {
+	if len(services) == 0 {
+		return nil
+	}
+
+	d.log.Infof("Starting infra services: %s", strings.Join(services, ", "))
+	args := []string{"-f", d.composeFile, "up", "-d"}
+	args = append(args, services...)
+	cmd := exec.Command("docker-compose", args...)
+	cmd.Dir = d.workDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to start infra services: %w\nOutput: %s", err, string(output))
+	}
+
+	d.log.Info("Waiting for infra services to be ready...")
+	time.Sleep(5 * time.Second)
+	return nil
+}
+
 func (d *DockerBuilder) RunMigrations(migrationCmd string) error {
 	if migrationCmd == "" {
 		migrationCmd = "npx prisma migrate deploy"
@@ -174,8 +195,9 @@ func (d *DockerBuilder) RunMigrations(migrationCmd string) error {
 
 	parts := strings.Fields(migrationCmd)
 
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "exec", "-T", "api")
-	cmd.Args = append(cmd.Args, parts...)
+	args := []string{"-f", d.composeFile, "run", "--rm", "api"}
+	args = append(args, parts...)
+	cmd := exec.Command("docker-compose", args...)
 	cmd.Dir = d.workDir
 
 	output, err := cmd.CombinedOutput()
