@@ -68,7 +68,7 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 			DockerEnvFile:      ".env.production",
 			RequiresMigrations: true,
 			MigrationCommand:   "npx prisma migrate deploy",
-			InfraServices:      []string{"db"},
+			InfraServices: []string{"postgres", "redis"},
 			Domain:             "api.notifykit.dev",
 			Port:               5932,
 			HealthCheckURL:     "http://localhost:5932/api/v1/health",
