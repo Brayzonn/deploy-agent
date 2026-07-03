@@ -13,10 +13,13 @@ import (
 	"github.com/Brayzonn/deploy-agent/pkg/types"
 )
 
+const defaultBackupParent = "/var/tmp/deployment-backups"
+
 type ClientBuilder struct {
-	builder *Builder
-	webRoot string
-	log     *logger.Logger
+	builder      *Builder
+	webRoot      string
+	backupParent string
+	log          *logger.Logger
 }
 
 // ============================================================
@@ -26,9 +29,10 @@ type ClientBuilder struct {
 /* NewClientBuilder creates a ClientBuilder that builds workDir and deploys to webRoot. */
 func NewClientBuilder(workDir, webRoot string, log *logger.Logger) *ClientBuilder {
 	return &ClientBuilder{
-		builder: New(workDir, log),
-		webRoot: webRoot,
-		log:     log,
+		builder:      New(workDir, log),
+		webRoot:      webRoot,
+		backupParent: defaultBackupParent,
+		log:          log,
 	}
 }
 
@@ -62,8 +66,10 @@ func (c *ClientBuilder) Build() (*types.BuildOutput, error) {
 
 /*
 Deploy backs up the current web root, clears it, and copies the new
-build output in. Returns the backup path (or "" if the backup step
-failed) so the caller can restore from it if a later step fails.
+build output in. Returns the backup path ("" when the web root had
+nothing to back up) so the caller can restore from it if a later
+step fails. A failed backup aborts the deploy before the web root is
+touched — the backup is what makes the wipe safe.
 */
 func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 	c.log.Info("Deploying client to web root...")
@@ -72,23 +78,19 @@ func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 		return "", err
 	}
 
-	timestamp := time.Now().Format("20060102_150405")
-	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s",
-		filepath.Base(c.webRoot), timestamp)
-
-	if err := c.backupWebRoot(); err != nil {
-		c.log.Warningf("Backup failed: %v", err)
-		backupDir = ""
+	backupDir, err := c.backupWebRoot()
+	if err != nil {
+		return "", fmt.Errorf("aborting deploy, backup of current web root failed: %w", err)
 	}
 
 	c.log.Infof("Clearing web root: %s", c.webRoot)
 	if err := c.clearWebRoot(); err != nil {
-		return "", fmt.Errorf("failed to clear web root: %w", err)
+		return backupDir, fmt.Errorf("failed to clear web root: %w", err)
 	}
 
 	c.log.Info("Copying files to web root...")
 	if err := c.copyToWebRoot(buildOutput); err != nil {
-		return "", fmt.Errorf("failed to copy files to web root: %w", err)
+		return backupDir, fmt.Errorf("failed to copy files to web root: %w", err)
 	}
 
 	c.log.Success("Client deployed successfully")
@@ -101,51 +103,49 @@ func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 
 /*
 backupWebRoot copies the current web root into a timestamped backup
-directory before it gets overwritten. No-ops if the web root doesn't
-exist yet or is empty.
+directory before it gets overwritten, and returns the path it
+created. Returns "" if the web root doesn't exist yet or is empty —
+there's nothing to back up, and nothing to restore later.
 */
-func (c *ClientBuilder) backupWebRoot() error {
+func (c *ClientBuilder) backupWebRoot() (string, error) {
 	entries, err := os.ReadDir(c.webRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("failed to read web root: %w", err)
+		return "", fmt.Errorf("failed to read web root: %w", err)
 	}
 
 	if len(entries) == 0 {
-		return nil
+		return "", nil
 	}
 
 	c.log.Info("Backing up current deployment...")
 
 	timestamp := time.Now().Format("20060102_150405")
-	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s",
-		filepath.Base(c.webRoot), timestamp)
+	backupDir := fmt.Sprintf("%s/%s_%s", c.backupParent, filepath.Base(c.webRoot), timestamp)
 
-	if err := os.MkdirAll(filepath.Dir(backupDir), 0700); err != nil {
-		return fmt.Errorf("failed to create backup directory: %w", err)
+	if err := os.MkdirAll(c.backupParent, 0700); err != nil {
+		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
 	cmd := exec.Command("cp", "-r", c.webRoot, backupDir)
-	if err := cmd.Run(); err != nil {
-		c.log.Warningf("Backup failed: %v", err)
-		return err
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("backup copy failed: %w\nOutput: %s", err, string(output))
 	}
 
 	c.log.Successf("Backup created: %s", backupDir)
 
 	c.cleanupOldBackups()
 
-	return nil
+	return backupDir, nil
 }
 
 /* cleanupOldBackups removes old backups for this site, keeping only the last 5. */
 func (c *ClientBuilder) cleanupOldBackups() {
-	backupParent := "/var/tmp/deployment-backups"
 	pattern := filepath.Base(c.webRoot) + "_*"
 
-	matches, err := filepath.Glob(filepath.Join(backupParent, pattern))
+	matches, err := filepath.Glob(filepath.Join(c.backupParent, pattern))
 	if err != nil || len(matches) <= 5 {
 		return
 	}
