@@ -68,31 +68,31 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 			DockerEnvFile:      ".env.production",
 			RequiresMigrations: true,
 			MigrationCommand:   "npx prisma migrate deploy",
-			InfraServices: []string{"postgres", "redis"},
+			InfraServices:      []string{"postgres", "redis"},
 			Domain:             "api.notifykit.dev",
 			Port:               5932,
 			HealthCheckURL:     "http://localhost:5932/api/v1/health",
 			HealthCheckTimeout: 30,
 		},
 		"notifykit-web": {
-			Name:        "notifykit-web",
-			RepoDir:     fmt.Sprintf("/home/zoney/%s", "notifykit-web"),
-			WebRoot:     fmt.Sprintf("/var/www/html/%s", "notifykit-web"),
-			ProjectType: types.ProjectTypeClient,
-			FullStack:   false,
-			ClientDir:   "client",
-			Domain:      "notifykit.dev",                    
-    		DomainAliases: []string{"www.notifykit.dev"},  
+			Name:          "notifykit-web",
+			RepoDir:       fmt.Sprintf("/home/zoney/%s", "notifykit-web"),
+			WebRoot:       fmt.Sprintf("/var/www/html/%s", "notifykit-web"),
+			ProjectType:   types.ProjectTypeClient,
+			FullStack:     false,
+			ClientDir:     "client",
+			Domain:        "notifykit.dev",
+			DomainAliases: []string{"www.notifykit.dev"},
 		},
 		"notifykit-admin": {
-			Name:        "notifykit-admin",
-			RepoDir:     fmt.Sprintf("/home/zoney/%s", "notifykit-admin"),
-			WebRoot:     fmt.Sprintf("/var/www/html/%s", "notifykit-admin"),
-			ProjectType: types.ProjectTypeClient,
-			FullStack:   false,
-			ClientDir:   ".",
-			Domain:      "admin.notifykit.dev",                   
-    		DomainAliases: []string{},  
+			Name:          "notifykit-admin",
+			RepoDir:       fmt.Sprintf("/home/zoney/%s", "notifykit-admin"),
+			WebRoot:       fmt.Sprintf("/var/www/html/%s", "notifykit-admin"),
+			ProjectType:   types.ProjectTypeClient,
+			FullStack:     false,
+			ClientDir:     ".",
+			Domain:        "admin.notifykit.dev",
+			DomainAliases: []string{},
 		},
 		"NotifyKit-Docs": {
 			Name:          "NotifyKit-Docs",
@@ -106,18 +106,23 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 		},
 	}
 
-	if config, exists := configs[repoName]; exists {
-		return config, nil
+	config, exists := configs[repoName]
+	if !exists {
+		config = &types.RepoConfig{
+			Name:        repoName,
+			RepoDir:     fmt.Sprintf("/home/%s/%s", repoOwner, repoName),
+			WebRoot:     fmt.Sprintf("/var/www/html/%s", repoName),
+			ProjectType: types.ProjectTypeClient,
+			FullStack:   false,
+			ClientDir:   "client",
+			ServerDir:   "server",
+			ServerEntry: "app.js",
+		}
 	}
 
-	return &types.RepoConfig{
-		Name:        repoName,
-		RepoDir:     fmt.Sprintf("/home/%s/%s", repoOwner, repoName),
-		WebRoot:     fmt.Sprintf("/var/www/html/%s", repoName),
-		ProjectType: types.ProjectTypeClient,
-		FullStack:   false,
-		ClientDir:   "client",
-		ServerDir:   "server",
-		ServerEntry: "app.js",
-	}, nil
+	if config.DeployBranch == "" {
+		config.DeployBranch = "main"
+	}
+
+	return config, nil
 }

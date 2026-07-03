@@ -51,65 +51,64 @@ func (g *GitManager) Validate() error {
 // Working tree
 // ============================================================
 
-/* HasUncommittedChanges checks whether the working tree has uncommitted changes. */
-func (g *GitManager) HasUncommittedChanges() (bool, error) {
+/*
+LocalChanges returns the porcelain status lines for local changes to
+tracked files. Untracked files are excluded — SyncToCommit leaves
+them alone, so they aren't at risk.
+*/
+func (g *GitManager) LocalChanges() ([]string, error) {
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = g.repoDir
 
 	output, err := cmd.Output()
 	if err != nil {
-		return false, fmt.Errorf("failed to check git status: %w", err)
+		return nil, fmt.Errorf("failed to check git status: %w", err)
 	}
 
-	return len(strings.TrimSpace(string(output))) > 0, nil
-}
-
-/* StashChanges stashes uncommitted changes under the given stash name. */
-func (g *GitManager) StashChanges(stashName string) error {
-	g.log.Warning("Uncommitted changes detected. Stashing...")
-
-	cmd := exec.Command("git", "stash", "push", "-m", stashName)
-	cmd.Dir = g.repoDir
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to stash changes: %w", err)
+	var changes []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(output)), "\n") {
+		if line == "" || strings.HasPrefix(line, "??") {
+			continue
+		}
+		changes = append(changes, line)
 	}
-
-	g.log.Success("Changes stashed successfully")
-	return nil
-}
-
-/* PopStash restores the most recently stashed changes. */
-func (g *GitManager) PopStash() error {
-	g.log.Info("Restoring stashed changes...")
-
-	cmd := exec.Command("git", "stash", "pop")
-	cmd.Dir = g.repoDir
-
-	if err := cmd.Run(); err != nil {
-		g.log.Warning("Failed to restore stashed changes")
-		return err
-	}
-
-	g.log.Success("Stashed changes restored")
-	return nil
+	return changes, nil
 }
 
 // ============================================================
 // Sync
 // ============================================================
 
-/* Fetch fetches the latest refs from the remote without merging. */
-func (g *GitManager) Fetch() error {
-	g.log.Info("Fetching latest changes from GitHub...")
+/*
+SyncToCommit forces the checkout to exactly the given commit on the
+tracked branch: fetch the branch, verify the commit exists, then
+force the branch ref to it and check it out. This handles every
+starting state the same way (wrong branch, diverged history, force-
+pushed remote, dirty tracked files). Local changes to tracked files
+are discarded; untracked files are left alone.
+*/
+func (g *GitManager) SyncToCommit(commit string) error {
+	g.log.Infof("Syncing checkout to %s@%s...", g.branch, short(commit))
 
-	cmd := exec.Command("git", "fetch")
-	cmd.Dir = g.repoDir
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to fetch from GitHub: %w", err)
+	fetchCmd := exec.Command("git", "fetch", "origin", g.branch)
+	fetchCmd.Dir = g.repoDir
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to fetch origin/%s: %w\nOutput: %s", g.branch, err, string(output))
 	}
 
+	verifyCmd := exec.Command("git", "cat-file", "-e", commit+"^{commit}")
+	verifyCmd.Dir = g.repoDir
+	if err := verifyCmd.Run(); err != nil {
+		return fmt.Errorf("commit %s not found after fetching origin/%s — likely removed by a force push; the push that replaced it triggers its own deploy", short(commit), g.branch)
+	}
+
+	checkoutCmd := exec.Command("git", "checkout", "-f", "-B", g.branch, commit)
+	checkoutCmd.Dir = g.repoDir
+	if output, err := checkoutCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to check out commit %s: %w\nOutput: %s", short(commit), err, string(output))
+	}
+
+	g.log.Successf("Checkout is at %s@%s", g.branch, short(commit))
 	return nil
 }
 
@@ -143,30 +142,9 @@ func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 	return true, nil
 }
 
-/* CheckForUpdates reports whether the local HEAD differs from origin/<branch>. */
-func (g *GitManager) CheckForUpdates() (bool, error) {
-	localCmd := exec.Command("git", "rev-parse", "@")
-	localCmd.Dir = g.repoDir
-	localOutput, err := localCmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("failed to get local HEAD: %w", err)
-	}
-	local := strings.TrimSpace(string(localOutput))
-
-	remoteCmd := exec.Command("git", "rev-parse", fmt.Sprintf("origin/%s", g.branch))
-	remoteCmd.Dir = g.repoDir
-	remoteOutput, err := remoteCmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("failed to get remote HEAD: %w", err)
-	}
-	remote := strings.TrimSpace(string(remoteOutput))
-
-	return local != remote, nil
-}
-
 /* ResetHard resets the repo to a specific commit; used to roll back a failed deploy. */
 func (g *GitManager) ResetHard(commit string) error {
-	g.log.Warningf("Resetting repository to commit %s...", commit[:7])
+	g.log.Warningf("Resetting repository to commit %s...", short(commit))
 
 	cmd := exec.Command("git", "reset", "--hard", commit)
 	cmd.Dir = g.repoDir
@@ -176,22 +154,7 @@ func (g *GitManager) ResetHard(commit string) error {
 		return fmt.Errorf("git reset failed: %w\nOutput: %s", err, string(output))
 	}
 
-	g.log.Successf("Repository reset to %s", commit[:7])
-	return nil
-}
-
-/* Pull pulls the latest changes for the tracked branch from the remote. */
-func (g *GitManager) Pull() error {
-	g.log.Info("Pulling latest changes from GitHub...")
-
-	cmd := exec.Command("git", "pull", "origin", g.branch)
-	cmd.Dir = g.repoDir
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to pull from GitHub: %w\nOutput: %s", err, string(output))
-	}
-
+	g.log.Successf("Repository reset to %s", short(commit))
 	return nil
 }
 
@@ -210,4 +173,16 @@ func (g *GitManager) GetCurrentCommit() (string, error) {
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
+/* short abbreviates a commit hash for logging, tolerating short input. */
+func short(commit string) string {
+	if len(commit) > 7 {
+		return commit[:7]
+	}
+	return commit
 }

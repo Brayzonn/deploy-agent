@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/Brayzonn/deploy-agent/internal/build"
 	"github.com/Brayzonn/deploy-agent/internal/config"
@@ -19,8 +20,7 @@ type Executor struct {
 	cfg        *config.Config
 	log        *logger.Logger
 	git        *git.GitManager
-	stashed    bool
-	prevCommit string // commit hash before pull, used for rollback
+	prevCommit string // commit hash before sync, used for rollback
 }
 
 // ============================================================
@@ -32,11 +32,10 @@ func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *
 	gitManager := git.New(ctx.Config.RepoDir, ctx.Branch, log)
 
 	return &Executor{
-		ctx:     ctx,
-		cfg:     cfg,
-		log:     log,
-		git:     gitManager,
-		stashed: false,
+		ctx: ctx,
+		cfg: cfg,
+		log: log,
+		git: gitManager,
 	}
 }
 
@@ -45,16 +44,23 @@ func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *
 // ============================================================
 
 /*
-Execute runs a full deployment: clone-or-validate the repo, stash
-any local changes, fetch and check for updates, pull if there are
-any, then hand off to deploy(). Fresh clones skip straight to
-deploy() since there's nothing to pull.
+Execute runs a full deployment: check the push is for the configured
+deploy branch, clone-or-validate the repo, force the checkout to
+exactly the webhook commit, then hand off to deploy(). Pushes to
+other branches and redeliveries of the already-deployed commit exit
+successfully without deploying.
 */
 func (e *Executor) Execute() error {
 	e.log.State(types.StateStarting)
 	e.log.Infof("Starting deployment for %s", e.ctx.RepoName)
 	e.log.Infof("Branch: %s | Type: %s | Docker: %t | Fullstack: %t",
 		e.ctx.Branch, e.ctx.Config.ProjectType, e.ctx.Config.UseDocker, e.ctx.Config.FullStack)
+
+	if e.ctx.Branch != e.ctx.Config.DeployBranch {
+		e.log.Infof("Ignoring push to branch %q — %s deploys from %q only",
+			e.ctx.Branch, e.ctx.RepoName, e.ctx.Config.DeployBranch)
+		return nil
+	}
 
 	freshClone, err := e.git.CloneIfMissing(e.ctx.RepoFullName)
 	if err != nil {
@@ -65,57 +71,28 @@ func (e *Executor) Execute() error {
 		return fmt.Errorf("git validation failed: %w", err)
 	}
 
-	if freshClone {
-		e.log.Info("Fresh clone detected, proceeding directly to deployment...")
-		if err := e.deploy(); err != nil {
-			return err
+	if !freshClone {
+		if commit, err := e.git.GetCurrentCommit(); err == nil {
+			if commit == e.ctx.Commit {
+				e.log.Success("Already at the requested commit. Nothing to deploy!")
+				return nil
+			}
+			e.prevCommit = commit
+		} else {
+			e.log.Warningf("Could not capture pre-sync commit for rollback: %v", err)
 		}
-		e.log.State(types.StateSuccess)
-		e.log.Success("Deployment completed successfully!")
-		e.log.Successf("Deployed %s (%s) to %s branch", e.ctx.RepoName, e.ctx.Commit[:7], e.ctx.Branch)
-		return nil
-	}
 
-	if err := e.handleUncommittedChanges(); err != nil {
-		return err
-	}
-
-	e.log.State(types.StateFetching)
-	if err := e.git.Fetch(); err != nil {
-		return fmt.Errorf("git fetch failed: %w", err)
-	}
-
-	hasUpdates, err := e.git.CheckForUpdates()
-	if err != nil {
-		return fmt.Errorf("failed to check for updates: %w", err)
-	}
-
-	if !hasUpdates {
-		e.log.Success("No changes to deploy. Your site is up to date!")
-		if e.stashed {
-			e.git.PopStash()
+		if changes, err := e.git.LocalChanges(); err != nil {
+			e.log.Warningf("Could not check for local changes: %v", err)
+		} else if len(changes) > 0 {
+			e.log.Warningf("Discarding local changes to %d tracked file(s) on the server:\n%s",
+				len(changes), strings.Join(changes, "\n"))
 		}
-		return nil
 	}
 
-	if commit, err := e.git.GetCurrentCommit(); err == nil {
-		e.prevCommit = commit
-	} else {
-		e.log.Warningf("Could not capture pre-pull commit for rollback: %v", err)
-	}
-
-	e.log.State(types.StatePulling)
-	if err := e.git.Pull(); err != nil {
-		if e.stashed {
-			e.log.Warning("Pull failed. Attempting to restore stash and retry...")
-			e.git.PopStash()
-			e.stashed = false
-		}
-		return fmt.Errorf("git pull failed: %w", err)
-	}
-
-	if e.stashed {
-		e.git.PopStash()
+	e.log.State(types.StateSyncing)
+	if err := e.git.SyncToCommit(e.ctx.Commit); err != nil {
+		return fmt.Errorf("git sync failed: %w", err)
 	}
 
 	if err := e.deploy(); err != nil {
@@ -162,28 +139,6 @@ func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string
 	}
 
 	e.log.Success("Server rolled back successfully")
-}
-
-// ============================================================
-// Git helpers
-// ============================================================
-
-/* handleUncommittedChanges stashes any uncommitted changes found in the working tree. */
-func (e *Executor) handleUncommittedChanges() error {
-	hasChanges, err := e.git.HasUncommittedChanges()
-	if err != nil {
-		return fmt.Errorf("failed to check for uncommitted changes: %w", err)
-	}
-
-	if hasChanges {
-		stashName := fmt.Sprintf("deployment-auto-stash-%s", e.ctx.DeploymentID)
-		if err := e.git.StashChanges(stashName); err != nil {
-			return fmt.Errorf("failed to stash changes: %w", err)
-		}
-		e.stashed = true
-	}
-
-	return nil
 }
 
 // ============================================================

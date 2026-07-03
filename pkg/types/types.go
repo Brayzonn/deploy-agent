@@ -14,21 +14,21 @@ const (
 type DeploymentState string
 
 const (
-	StateStarting        DeploymentState = "STARTING"
-	StateFetching        DeploymentState = "FETCHING"
-	StatePulling         DeploymentState = "PULLING"
-	StateDeployingServer DeploymentState = "DEPLOYING_SERVER"
-	StateDeployingClient DeploymentState = "DEPLOYING_CLIENT"
-	StateDeployingFull   DeploymentState = "DEPLOYING_FULLSTACK"
-	StateBuildingDocker  DeploymentState = "BUILDING_DOCKER"      
-	StateDeployingDocker DeploymentState = "DEPLOYING_DOCKER"     
-	StateRunningMigrations DeploymentState = "RUNNING_MIGRATIONS" 
-	StateSuccess         DeploymentState = "SUCCESS"
-	StateFailed          DeploymentState = "FAILED"
+	StateStarting          DeploymentState = "STARTING"
+	StateSyncing           DeploymentState = "SYNCING"
+	StateDeployingServer   DeploymentState = "DEPLOYING_SERVER"
+	StateDeployingClient   DeploymentState = "DEPLOYING_CLIENT"
+	StateDeployingFull     DeploymentState = "DEPLOYING_FULLSTACK"
+	StateBuildingDocker    DeploymentState = "BUILDING_DOCKER"
+	StateDeployingDocker   DeploymentState = "DEPLOYING_DOCKER"
+	StateRunningMigrations DeploymentState = "RUNNING_MIGRATIONS"
+	StateSuccess           DeploymentState = "SUCCESS"
+	StateFailed            DeploymentState = "FAILED"
 )
 
 type RepoConfig struct {
 	Name          string
+	DeployBranch  string 
 	RepoDir       string
 	WebRoot       string
 	ProjectType   ProjectType
@@ -37,11 +37,11 @@ type RepoConfig struct {
 	ServerDir     string
 	ServerEntry   string
 	PM2Ecosystem  string
-	Domain        string   
-	DomainAliases []string 
-	Port          int      
+	Domain        string
+	DomainAliases []string
+	Port          int
 
-    UseDocker          bool
+	UseDocker          bool
 	DockerComposeFile  string
 	DockerEnvFile      string
 	RequiresMigrations bool
@@ -50,22 +50,21 @@ type RepoConfig struct {
 	HealthCheckURL     string
 	HealthCheckTimeout int
 
-	// Client fields — populated when a Docker project also has a frontend to serve via Nginx
 	ClientDomain        string
 	ClientDomainAliases []string
 	ClientWebRoot       string
 }
 
 type DeploymentContext struct {
-	RepoName      string
-	Branch        string
-	RepoOwner     string
-	Pusher        string
-	Commit        string
-	RepoFullName  string
-	DeploymentID  string
-	StartTime     time.Time
-	Config        *RepoConfig
+	RepoName     string
+	Branch       string
+	RepoOwner    string
+	Pusher       string
+	Commit       string
+	RepoFullName string
+	DeploymentID string
+	StartTime    time.Time
+	Config       *RepoConfig
 }
 
 type BuildOutput struct {
