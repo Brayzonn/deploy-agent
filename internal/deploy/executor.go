@@ -118,35 +118,64 @@ func (e *Executor) Execute() error {
 // Rollback
 // ============================================================
 
-/* rollbackGit resets the repo to prevCommit. Safe to call after any failure. */
-func (e *Executor) rollbackGit() {
+/*
+rollbackGit resets the repo to prevCommit. Reports whether the
+checkout actually holds the previous commit afterward, so callers
+don't rebuild the failed code thinking it's the old version.
+*/
+func (e *Executor) rollbackGit() bool {
 	if e.prevCommit == "" {
-		e.log.Warning("No pre-pull commit recorded — cannot rollback git")
-		return
+		e.log.Warning("No pre-sync commit recorded — cannot rollback git")
+		return false
 	}
 	if err := e.git.ResetHard(e.prevCommit); err != nil {
 		e.log.Errorf("Git rollback failed: %v", err)
+		return false
 	}
+	return true
 }
 
-/* rollbackServer resets git and restarts PM2 with the previous working build. */
+/*
+rollbackServer resets git to the pre-sync commit, rebuilds, restarts
+PM2, and re-runs the health check to confirm the previous version is
+actually serving. If there is no commit to roll back to (fresh clone
+or failed capture), it stops instead of rebuilding the code that
+just failed, and says so.
+*/
 func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string) {
 	e.log.Warning("Rolling back server deployment...")
-	e.rollbackGit()
+
+	if !e.rollbackGit() {
+		e.log.Error("Cannot roll back: no previous commit to return to — MANUAL INTERVENTION REQUIRED; whatever PM2 is running is still the failed deploy")
+		return
+	}
 
 	e.log.Info("Rebuilding previous version...")
 	if _, err := builder.Build(); err != nil {
-		e.log.Errorf("Rollback build failed: %v", err)
+		e.log.Errorf("Rollback build failed: %v — MANUAL INTERVENTION REQUIRED", err)
 		return
 	}
 
 	e.log.Info("Restarting PM2 with previous version...")
 	if err := builder.Deploy(serverDir); err != nil {
-		e.log.Errorf("Rollback PM2 restart failed: %v", err)
+		e.log.Errorf("Rollback PM2 restart failed: %v — MANUAL INTERVENTION REQUIRED", err)
 		return
 	}
 
-	e.log.Success("Server rolled back successfully")
+	healthChecker := health.New(
+		e.ctx.Config.Domain,
+		e.ctx.Config.Port,
+		e.ctx.RepoName,
+		e.ctx.Config.ProjectType,
+		e.log,
+	)
+
+	if err := healthChecker.Check(); err != nil {
+		e.log.Errorf("Rolled-back version failed its health check too: %v — MANUAL INTERVENTION REQUIRED", err)
+		return
+	}
+
+	e.log.Success("Server rolled back successfully and passed health check")
 }
 
 // ============================================================
