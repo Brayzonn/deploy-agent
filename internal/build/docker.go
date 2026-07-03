@@ -17,7 +17,21 @@ type DockerBuilder struct {
 	composeFile string
 	envFile     string
 	log         *logger.Logger
-	prevTagged  []string
+	prevImages  []previousImage
+}
+
+/*
+previousImage records everything needed to restore one service during
+rollback: the exact image reference compose resolves for the service
+(imageName, taken from the running container rather than guessed from
+naming conventions), the image ID that was running before this deploy,
+and the safety tag keeping that ID alive.
+*/
+type previousImage struct {
+	service   string
+	imageName string // reference compose resolves for this service, e.g. "mines_api:latest"
+	imageID   string // image ID running before this deploy
+	prevTag   string // safety tag holding imageID, e.g. "mines-api:previous"
 }
 
 // ============================================================
@@ -51,10 +65,13 @@ func NewDockerBuilder(workDir, composeFile, envFile string, log *logger.Logger) 
 /*
 tagPreviousImages tags each currently running service's image as
 "<project>-<service>:previous" so Rollback() has something to
-restore if the upcoming build or deploy fails.
+restore if the upcoming build or deploy fails. Alongside the tag it
+records the image reference the container was actually created from
+({{.Config.Image}}), so rollback can restore onto the exact name
+compose resolves instead of guessing a naming convention.
 */
 func (d *DockerBuilder) tagPreviousImages() {
-	d.prevTagged = nil
+	d.prevImages = nil
 
 	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
 	cmd.Dir = d.workDir
@@ -72,33 +89,43 @@ func (d *DockerBuilder) tagPreviousImages() {
 			continue
 		}
 
-		imgCmd := exec.Command("docker", "inspect",
-			"--format", "{{.Image}}",
+		inspectCmd := exec.Command("docker", "inspect",
+			"--format", "{{.Image}}|{{.Config.Image}}",
 			strings.TrimSpace(string(containerID)),
 		)
-		imageID, err := imgCmd.Output()
-		if err != nil || strings.TrimSpace(string(imageID)) == "" {
+		info, err := inspectCmd.Output()
+		if err != nil {
 			continue
 		}
 
-		tag := fmt.Sprintf("%s-%s:previous", d.projectName(), svc)
-		tagCmd := exec.Command("docker", "tag", strings.TrimSpace(string(imageID)), tag)
+		imageID, imageName, ok := strings.Cut(strings.TrimSpace(string(info)), "|")
+		if !ok || imageID == "" || imageName == "" {
+			continue
+		}
+
+		prevTag := fmt.Sprintf("%s-%s:previous", d.projectName(), svc)
+		tagCmd := exec.Command("docker", "tag", imageID, prevTag)
 		if err := tagCmd.Run(); err != nil {
 			d.log.Warningf("Could not tag previous image for %s: %v", svc, err)
 			continue
 		}
 
-		d.prevTagged = append(d.prevTagged, tag)
-		d.log.Infof("Tagged previous image for %s as %s", svc, tag)
+		d.prevImages = append(d.prevImages, previousImage{
+			service:   svc,
+			imageName: imageName,
+			imageID:   imageID,
+			prevTag:   prevTag,
+		})
+		d.log.Infof("Tagged previous image for %s (%s) as %s", svc, imageName, prevTag)
 	}
 }
 
 /* cleanPreviousTags removes the ":previous" tags after a successful deployment. */
 func (d *DockerBuilder) cleanPreviousTags() {
-	for _, tag := range d.prevTagged {
-		exec.Command("docker", "rmi", tag).Run()
+	for _, prev := range d.prevImages {
+		exec.Command("docker", "rmi", prev.prevTag).Run()
 	}
-	d.prevTagged = nil
+	d.prevImages = nil
 }
 
 /* projectName derives a stable image-tag prefix from the working directory name. */
@@ -311,7 +338,7 @@ a broken state.
 func (d *DockerBuilder) Rollback() error {
 	d.log.Warning("Rolling back Docker deployment...")
 
-	if len(d.prevTagged) == 0 {
+	if len(d.prevImages) == 0 {
 		d.log.Warning("No previous images tagged — bringing stack down cleanly")
 		cmd := exec.Command("docker-compose", "-f", d.composeFile, "down")
 		cmd.Dir = d.workDir
@@ -324,29 +351,23 @@ func (d *DockerBuilder) Rollback() error {
 
 	d.log.Info("Restoring previous images...")
 
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
-	cmd.Dir = d.workDir
-	out, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("could not list services during rollback: %w", err)
-	}
-
-	for svc := range strings.FieldsSeq(string(out)) {
-		prevTag := fmt.Sprintf("%s-%s:previous", d.projectName(), svc)
-		imgNameCmd := exec.Command("docker-compose", "-f", d.composeFile, "config")
-		imgNameCmd.Dir = d.workDir
-
-		retagCmd := exec.Command("docker", "tag", prevTag,
-			fmt.Sprintf("%s-%s:latest", d.projectName(), svc))
+	for _, prev := range d.prevImages {
+		retagCmd := exec.Command("docker", "tag", prev.prevTag, prev.imageName)
 		if err := retagCmd.Run(); err != nil {
-			d.log.Warningf("Could not retag previous image for %s: %v", svc, err)
+			d.log.Warningf("Could not retag %s onto %s for service %s: %v",
+				prev.prevTag, prev.imageName, prev.service, err)
 		}
 	}
 
-	upCmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--no-build")
+	upCmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--no-build", "--remove-orphans")
 	upCmd.Dir = d.workDir
 	if output, err := upCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to bring up previous containers: %w\nOutput: %s", err, string(output))
+	}
+
+	// Keep the :previous tags around for manual recovery if verification fails.
+	if err := d.verifyRollback(); err != nil {
+		return fmt.Errorf("rollback verification failed: %w", err)
 	}
 
 	d.log.Success("Previous version restored successfully")
@@ -354,9 +375,48 @@ func (d *DockerBuilder) Rollback() error {
 	return nil
 }
 
+/*
+verifyRollback confirms each rolled-back service is actually running
+the image ID recorded before the deploy, instead of trusting that the
+retag + up worked.
+*/
+func (d *DockerBuilder) verifyRollback() error {
+	var wrong []string
+
+	for _, prev := range d.prevImages {
+		psCmd := exec.Command("docker-compose", "-f", d.composeFile, "ps", "-q", prev.service)
+		psCmd.Dir = d.workDir
+		containerID, err := psCmd.Output()
+		if err != nil || strings.TrimSpace(string(containerID)) == "" {
+			wrong = append(wrong, fmt.Sprintf("%s (not running)", prev.service))
+			continue
+		}
+
+		imgCmd := exec.Command("docker", "inspect",
+			"--format", "{{.Image}}",
+			strings.TrimSpace(string(containerID)),
+		)
+		imageID, err := imgCmd.Output()
+		if err != nil {
+			wrong = append(wrong, fmt.Sprintf("%s (could not inspect container)", prev.service))
+			continue
+		}
+
+		if strings.TrimSpace(string(imageID)) != prev.imageID {
+			wrong = append(wrong, fmt.Sprintf("%s (still running the new image)", prev.service))
+		}
+	}
+
+	if len(wrong) > 0 {
+		return fmt.Errorf("services not restored to previous images: %s", strings.Join(wrong, ", "))
+	}
+
+	return nil
+}
+
 /* CleanupOnSuccess removes the ":previous" tags after a successful deployment. */
 func (d *DockerBuilder) CleanupOnSuccess() {
-	if len(d.prevTagged) > 0 {
+	if len(d.prevImages) > 0 {
 		d.log.Info("Cleaning up previous image tags...")
 		d.cleanPreviousTags()
 	}
