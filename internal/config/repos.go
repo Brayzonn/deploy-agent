@@ -108,16 +108,7 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 
 	config, exists := configs[repoName]
 	if !exists {
-		config = &types.RepoConfig{
-			Name:        repoName,
-			RepoDir:     fmt.Sprintf("/home/%s/%s", repoOwner, repoName),
-			WebRoot:     fmt.Sprintf("/var/www/html/%s", repoName),
-			ProjectType: types.ProjectTypeClient,
-			FullStack:   false,
-			ClientDir:   "client",
-			ServerDir:   "server",
-			ServerEntry: "app.js",
-		}
+		return nil, fmt.Errorf("repository %q is not in the deployment allowlist", repoName)
 	}
 
 	if config.DeployBranch == "" {

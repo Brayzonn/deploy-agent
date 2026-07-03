@@ -28,7 +28,7 @@ const (
 
 type RepoConfig struct {
 	Name          string
-	DeployBranch  string 
+	DeployBranch  string
 	RepoDir       string
 	WebRoot       string
 	ProjectType   ProjectType

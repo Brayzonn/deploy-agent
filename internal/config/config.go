@@ -4,9 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Brayzonn/deploy-agent/pkg/types"
+)
+
+var (
+	namePattern   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+	commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 )
 
 type Config struct {
@@ -64,6 +72,10 @@ func ValidateEnvironment() (*types.DeploymentContext, error) {
 		}
 	}
 
+	if err := validateWebhookValues(required); err != nil {
+		return nil, err
+	}
+
 	deploymentID := fmt.Sprintf("%s_%d", time.Now().Format("20060102_150405"), os.Getpid())
 
 	repoConfig, err := GetRepoConfig(required["GITHUB_REPO_NAME"], required["GITHUB_REPO_OWNER"])
@@ -82,6 +94,39 @@ func ValidateEnvironment() (*types.DeploymentContext, error) {
 		StartTime:    time.Now(),
 		Config:       repoConfig,
 	}, nil
+}
+
+/*
+validateWebhookValues rejects webhook-supplied values that could
+steer filesystem paths or be parsed as git flags: path traversal,
+path separators in names, leading dashes, and malformed commit
+hashes. These values feed directly into RepoDir/WebRoot paths and
+git command arguments, so they must be strictly shaped.
+*/
+func validateWebhookValues(required map[string]string) error {
+	for _, key := range []string{"GITHUB_REPO_NAME", "GITHUB_REPO_OWNER", "GITHUB_PUSHER"} {
+		value := required[key]
+		if !namePattern.MatchString(value) || strings.Contains(value, "..") {
+			return fmt.Errorf("%s contains unsafe characters: %q", key, value)
+		}
+	}
+
+	branch := required["GITHUB_BRANCH"]
+	if !branchPattern.MatchString(branch) || strings.Contains(branch, "..") {
+		return fmt.Errorf("GITHUB_BRANCH contains unsafe characters: %q", branch)
+	}
+
+	if commit := required["GITHUB_COMMIT"]; !commitPattern.MatchString(commit) {
+		return fmt.Errorf("GITHUB_COMMIT is not a full 40-character commit hash: %q", commit)
+	}
+
+	expectedFullName := required["GITHUB_REPO_OWNER"] + "/" + required["GITHUB_REPO_NAME"]
+	if required["GITHUB_REPO_FULL_NAME"] != expectedFullName {
+		return fmt.Errorf("GITHUB_REPO_FULL_NAME %q does not match owner/name %q",
+			required["GITHUB_REPO_FULL_NAME"], expectedFullName)
+	}
+
+	return nil
 }
 
 // ============================================================

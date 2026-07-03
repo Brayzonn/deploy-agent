@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
@@ -67,8 +68,8 @@ failed) so the caller can restore from it if a later step fails.
 func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 	c.log.Info("Deploying client to web root...")
 
-	if c.webRoot == "" || c.webRoot == "/" || c.webRoot == "/home" {
-		return "", fmt.Errorf("refusing to deploy: webRoot is set to a dangerous value: '%s'", c.webRoot)
+	if err := c.validateWebRoot(); err != nil {
+		return "", err
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
@@ -161,6 +162,19 @@ func (c *ClientBuilder) cleanupOldBackups() {
 // Web root
 // ============================================================
 
+/*
+validateWebRoot refuses any web root that isn't strictly inside
+/var/www/html — clearWebRoot deletes everything at this path, so it
+must never be steerable elsewhere on the filesystem.
+*/
+func (c *ClientBuilder) validateWebRoot() error {
+	cleaned := filepath.Clean(c.webRoot)
+	if !strings.HasPrefix(cleaned, "/var/www/html/") {
+		return fmt.Errorf("refusing to touch web root outside /var/www/html: %q", c.webRoot)
+	}
+	return nil
+}
+
 /* clearWebRoot removes all files from the web root, creating it first if needed. */
 func (c *ClientBuilder) clearWebRoot() error {
 	if err := os.MkdirAll(c.webRoot, 0755); err != nil {
@@ -205,6 +219,10 @@ backup back into place, then restarts nginx to pick up the change.
 func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	if backupDir == "" {
 		return fmt.Errorf("no backup directory provided")
+	}
+
+	if err := c.validateWebRoot(); err != nil {
+		return err
 	}
 
 	c.log.Warning("Restoring previous deployment from backup...")
