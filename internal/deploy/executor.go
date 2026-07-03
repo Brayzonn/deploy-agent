@@ -9,6 +9,7 @@ import (
 	"github.com/Brayzonn/deploy-agent/internal/config"
 	"github.com/Brayzonn/deploy-agent/internal/git"
 	"github.com/Brayzonn/deploy-agent/internal/health"
+	"github.com/Brayzonn/deploy-agent/internal/lock"
 	"github.com/Brayzonn/deploy-agent/internal/logger"
 	"github.com/Brayzonn/deploy-agent/internal/nginx"
 	"github.com/Brayzonn/deploy-agent/internal/ssl"
@@ -45,10 +46,11 @@ func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *
 
 /*
 Execute runs a full deployment: check the push is for the configured
-deploy branch, clone-or-validate the repo, force the checkout to
-exactly the webhook commit, then hand off to deploy(). Pushes to
-other branches and redeliveries of the already-deployed commit exit
-successfully without deploying.
+deploy branch, take the per-repo deploy lock, clone-or-validate the
+repo, force the checkout to exactly the webhook commit, then hand
+off to deploy(). Concurrent pushes serialize behind the lock and
+deploy in order. Pushes to other branches and redeliveries of the
+already-deployed commit exit successfully without deploying.
 */
 func (e *Executor) Execute() error {
 	e.log.State(types.StateStarting)
@@ -61,6 +63,12 @@ func (e *Executor) Execute() error {
 			e.ctx.Branch, e.ctx.RepoName, e.ctx.Config.DeployBranch)
 		return nil
 	}
+
+	deployLock, err := lock.Acquire(e.cfg.StateDir, e.ctx.RepoName, e.log)
+	if err != nil {
+		return fmt.Errorf("failed to acquire deploy lock: %w", err)
+	}
+	defer deployLock.Release()
 
 	freshClone, err := e.git.CloneIfMissing(e.ctx.RepoFullName)
 	if err != nil {
@@ -356,9 +364,11 @@ func (e *Executor) deployClient() error {
 
 	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
 	if err != nil {
-		e.log.Warning("Client deployment failed, attempting to restore backup...")
-		if restoreErr := clientBuilder.RestoreFromBackup(backupDir); restoreErr != nil {
-			e.log.Errorf("Backup restore failed: %v", restoreErr)
+		if backupDir != "" {
+			e.log.Warning("Client deployment failed, attempting to restore backup...")
+			if restoreErr := clientBuilder.RestoreFromBackup(backupDir); restoreErr != nil {
+				e.log.Errorf("Backup restore failed: %v", restoreErr)
+			}
 		}
 		return fmt.Errorf("client deployment failed: %w", err)
 	}
