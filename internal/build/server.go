@@ -131,14 +131,14 @@ func (s *ServerBuilder) Deploy(workDir string) error {
 		}
 	} else {
 		s.log.Info("Starting new PM2 app...")
-		if err := pm2Manager.Start(s.pm2Ecosystem); err != nil {
+		if err := pm2Manager.Start(s.pm2Ecosystem, s.serverEntry); err != nil {
 			return fmt.Errorf("failed to start PM2 app: %w", err)
 		}
 	}
 
 	time.Sleep(4 * time.Second)
 
-	if err := pm2Manager.EnsureRunning(s.pm2Ecosystem, 5); err != nil {
+	if err := pm2Manager.EnsureRunning(s.pm2Ecosystem, s.serverEntry, 5); err != nil {
 		return fmt.Errorf("PM2 app not running: %w", err)
 	}
 

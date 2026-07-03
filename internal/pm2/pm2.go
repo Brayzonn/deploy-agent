@@ -94,11 +94,24 @@ func (p *PM2Manager) GetStatus() (string, error) {
 // Process management
 // ============================================================
 
-/* Start starts the PM2 app from the given ecosystem file. */
-func (p *PM2Manager) Start(ecosystemFile string) error {
-	p.log.Infof("Starting PM2 app '%s' with ecosystem file...", p.appName)
-
-	cmd := exec.Command("pm2", "start", ecosystemFile)
+/*
+Start starts the PM2 app from the ecosystem file when one is
+configured, otherwise from the server entry file under the app's
+name. Errors when neither is configured — `pm2 start ""` can never
+succeed, so failing with the reason beats retrying it.
+*/
+func (p *PM2Manager) Start(ecosystemFile, serverEntry string) error {
+	var cmd *exec.Cmd
+	switch {
+	case ecosystemFile != "":
+		p.log.Infof("Starting PM2 app '%s' with ecosystem file %s...", p.appName, ecosystemFile)
+		cmd = exec.Command("pm2", "start", ecosystemFile)
+	case serverEntry != "":
+		p.log.Infof("Starting PM2 app '%s' from entry file %s...", p.appName, serverEntry)
+		cmd = exec.Command("pm2", "start", serverEntry, "--name", p.appName)
+	default:
+		return fmt.Errorf("cannot start PM2 app '%s': neither PM2Ecosystem nor ServerEntry is configured", p.appName)
+	}
 	cmd.Dir = p.workDir
 
 	output, err := cmd.CombinedOutput()
@@ -151,14 +164,14 @@ EnsureRunning polls the app's status and nudges it toward "online":
 starting it if missing, restarting it if stopped, and deleting and
 recreating it if errored. Gives up after maxAttempts.
 */
-func (p *PM2Manager) EnsureRunning(ecosystemFile string, maxAttempts int) error {
+func (p *PM2Manager) EnsureRunning(ecosystemFile, serverEntry string, maxAttempts int) error {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		status, err := p.GetStatus()
 
 		switch {
 		case err != nil && strings.Contains(err.Error(), "app not found"):
 			p.log.Infof("Creating new PM2 app '%s' (attempt %d/%d)...", p.appName, attempt, maxAttempts)
-			if err := p.Start(ecosystemFile); err != nil {
+			if err := p.Start(ecosystemFile, serverEntry); err != nil {
 				p.log.Warningf("Failed to start PM2 app: %v", err)
 			}
 
