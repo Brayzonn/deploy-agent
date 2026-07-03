@@ -39,10 +39,19 @@ func New(domain string, domainAliases []string, webRoot string, projectType type
 // Config management
 // ============================================================
 
+/* availablePath returns the site's config path in sites-available. */
+func (n *NginxManager) availablePath() string {
+	return fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
+}
+
+/* enabledPath returns the site's symlink path in sites-enabled. */
+func (n *NginxManager) enabledPath() string {
+	return fmt.Sprintf("/etc/nginx/sites-enabled/%s", n.domain)
+}
+
 /* ConfigExists reports whether an nginx config already exists for the domain. */
 func (n *NginxManager) ConfigExists() bool {
-	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
-	_, err := os.Stat(configPath)
+	_, err := os.Stat(n.availablePath())
 	return err == nil
 }
 
@@ -50,11 +59,13 @@ func (n *NginxManager) ConfigExists() bool {
 GenerateConfig writes an nginx config for the domain, choosing a
 static-file template for client projects and a reverse-proxy
 template for everything else. No-ops if a config already exists.
+Returns whether this call created the config, so a failed setup can
+clean up exactly what it made.
 */
-func (n *NginxManager) GenerateConfig() error {
+func (n *NginxManager) GenerateConfig() (bool, error) {
 	if n.ConfigExists() {
-		n.log.Info("Nginx config already exists, skipping generation")
-		return nil
+		n.log.Warningf("Nginx config for %s already exists — current Port/WebRoot/alias settings are NOT applied; delete %s to regenerate", n.domain, n.availablePath())
+		return false, nil
 	}
 
 	n.log.Info("Generating nginx configuration...")
@@ -66,46 +77,45 @@ func (n *NginxManager) GenerateConfig() error {
 	case types.ProjectTypeAPIJS, types.ProjectTypeAPITS, types.ProjectTypeDocker:
 		config = n.generateAPIConfig()
 	default:
-		return fmt.Errorf("unsupported project type for nginx: %s", n.projectType)
+		return false, fmt.Errorf("unsupported project type for nginx: %s", n.projectType)
 	}
 
-	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
-
-	cmd := exec.Command("sudo", "tee", configPath)
+	cmd := exec.Command("sudo", "tee", n.availablePath())
 	cmd.Stdin = strings.NewReader(config)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to write nginx config: %w\nOutput: %s", err, string(output))
+		return false, fmt.Errorf("failed to write nginx config: %w\nOutput: %s", err, string(output))
 	}
 
-	n.log.Successf("Nginx config created: %s", configPath)
-	return nil
+	n.log.Successf("Nginx config created: %s", n.availablePath())
+	return true, nil
 }
 
 // ============================================================
 // Site management
 // ============================================================
 
-/* EnableSite symlinks the site into sites-enabled, if not already enabled. */
-func (n *NginxManager) EnableSite() error {
-	sourcePath := fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
-	targetPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s", n.domain)
-
-	if _, err := os.Stat(targetPath); err == nil {
+/*
+EnableSite symlinks the site into sites-enabled, if not already
+enabled. Returns whether this call created the symlink, so a failed
+setup can clean up exactly what it made.
+*/
+func (n *NginxManager) EnableSite() (bool, error) {
+	if _, err := os.Stat(n.enabledPath()); err == nil {
 		n.log.Info("Site already enabled")
-		return nil
+		return false, nil
 	}
 
 	n.log.Info("Enabling nginx site...")
 
-	cmd := exec.Command("sudo", "ln", "-s", sourcePath, targetPath)
+	cmd := exec.Command("sudo", "ln", "-s", n.availablePath(), n.enabledPath())
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to enable site: %w", err)
+		return false, fmt.Errorf("failed to enable site: %w", err)
 	}
 
 	n.log.Success("Site enabled successfully")
-	return nil
+	return true, nil
 }
 
 /* TestConfig validates the nginx configuration via `nginx -t`. */
@@ -135,30 +145,58 @@ func (n *NginxManager) Reload() error {
 	return nil
 }
 
+/*
+removeCreated deletes whatever this run created (config file and/or
+symlink) after a failed setup, so a broken config never stays in
+sites-available/sites-enabled to poison every future deploy of every
+project. Pre-existing files are never touched.
+*/
+func (n *NginxManager) removeCreated(createdConfig, enabledSite bool) {
+	if enabledSite {
+		if err := exec.Command("sudo", "rm", "-f", n.enabledPath()).Run(); err != nil {
+			n.log.Errorf("Failed to remove broken nginx symlink %s — remove it manually or all nginx reloads will fail: %v", n.enabledPath(), err)
+		} else {
+			n.log.Warningf("Removed nginx symlink %s", n.enabledPath())
+		}
+	}
+
+	if createdConfig {
+		if err := exec.Command("sudo", "rm", "-f", n.availablePath()).Run(); err != nil {
+			n.log.Errorf("Failed to remove broken nginx config %s — remove it manually: %v", n.availablePath(), err)
+		} else {
+			n.log.Warningf("Removed nginx config %s", n.availablePath())
+		}
+	}
+}
+
 // ============================================================
 // Orchestration
 // ============================================================
 
 /*
 Setup runs the full nginx setup sequence for a site: generate the
-config, enable it, test it, then reload nginx.
+config, enable it, test it, then reload nginx. If the test fails,
+anything this run created is removed before returning the error.
 */
 func (n *NginxManager) Setup() error {
-	if err := n.GenerateConfig(); err != nil {
+	createdConfig, err := n.GenerateConfig()
+	if err != nil {
 		return err
 	}
 
-	if err := n.EnableSite(); err != nil {
+	enabledSite, err := n.EnableSite()
+	if err != nil {
+		n.removeCreated(createdConfig, false)
 		return err
 	}
 
 	if err := n.TestConfig(); err != nil {
+		if createdConfig || enabledSite {
+			n.log.Warning("Removing the just-created nginx config so it can't break future deploys...")
+			n.removeCreated(createdConfig, enabledSite)
+		}
 		return err
 	}
 
-	if err := n.Reload(); err != nil {
-		return err
-	}
-
-	return nil
+	return n.Reload()
 }
