@@ -4,12 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
+)
+
+const (
+	installTimeout = 10 * time.Minute
+	buildTimeout   = 15 * time.Minute
 )
 
 type Builder struct {
@@ -42,20 +47,19 @@ func (b *Builder) InstallDependencies() error {
 	b.log.Info("Installing dependencies...")
 
 	lockFile := filepath.Join(b.workDir, "package-lock.json")
-	var cmd *exec.Cmd
+	var args []string
 
 	if _, err := os.Stat(lockFile); err == nil {
 		b.log.Info("Using npm ci (lock file found)...")
-		cmd = exec.Command("npm", "ci", "--prefer-offline", "--no-audit")
+		args = []string{"ci", "--prefer-offline", "--no-audit"}
 	} else {
 		b.log.Info("Using npm install (no lock file)...")
-		cmd = exec.Command("npm", "install")
+		args = []string{"install"}
 	}
 
-	cmd.Dir = b.workDir
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(installTimeout, b.workDir, "npm", args...)
 	if err != nil {
-		return fmt.Errorf("failed to install dependencies: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to install dependencies: %w\nOutput: %s", err, output)
 	}
 
 	b.log.Success("Dependencies installed successfully")
@@ -88,9 +92,11 @@ func (b *Builder) ScriptExists(scriptName string) (bool, error) {
 // ============================================================
 
 /*
-RunBuild runs the npm "build" script and locates its output
-directory, checking "dist" then "build" since projects vary in
-which one they emit to.
+RunBuild removes stale build output, runs the npm "build" script,
+and locates the fresh output directory, checking "dist" then "build"
+since projects vary in which one they emit to. Cleaning first means
+a build that silently produces nothing fails here instead of
+redeploying last deploy's artifacts.
 */
 func (b *Builder) RunBuild() (*types.BuildOutput, error) {
 	b.log.Info("Building application...")
@@ -104,10 +110,15 @@ func (b *Builder) RunBuild() (*types.BuildOutput, error) {
 		return nil, fmt.Errorf("no 'build' script found in package.json")
 	}
 
-	cmd := exec.Command("npm", "run", "build")
-	cmd.Dir = b.workDir
+	distPath := filepath.Join(b.workDir, "dist")
+	buildPath := filepath.Join(b.workDir, "build")
+	for _, stale := range []string{distPath, buildPath} {
+		if err := os.RemoveAll(stale); err != nil {
+			return nil, fmt.Errorf("failed to clean stale build output %s: %w", stale, err)
+		}
+	}
 
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(buildTimeout, b.workDir, "npm", "run", "build")
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -115,14 +126,11 @@ func (b *Builder) RunBuild() (*types.BuildOutput, error) {
 		return &types.BuildOutput{
 			Success:  false,
 			Duration: duration,
-			Error:    fmt.Errorf("build failed: %w\nOutput: %s", err, string(output)),
+			Error:    fmt.Errorf("build failed: %w\nOutput: %s", err, output),
 		}, err
 	}
 
 	outputDir := ""
-	distPath := filepath.Join(b.workDir, "dist")
-	buildPath := filepath.Join(b.workDir, "build")
-
 	if _, err := os.Stat(distPath); err == nil {
 		outputDir = distPath
 	} else if _, err := os.Stat(buildPath); err == nil {
@@ -131,8 +139,8 @@ func (b *Builder) RunBuild() (*types.BuildOutput, error) {
 		return &types.BuildOutput{
 			Success:  false,
 			Duration: duration,
-			Error:    fmt.Errorf("no build output directory found (dist/build missing)"),
-		}, fmt.Errorf("no build output found")
+			Error:    fmt.Errorf("build produced no output directory (dist/build missing)"),
+		}, fmt.Errorf("build produced no output")
 	}
 
 	b.log.Successf("Build completed in %v", duration)
@@ -171,42 +179,4 @@ func (b *Builder) ValidateBuildOutput(outputDir string) error {
 
 	b.log.Successf("Build output validated: %d files/directories found", len(entries))
 	return nil
-}
-
-/*
-WaitForBuildCompletion polls for the "dist" or "build" directory to
-appear, up to timeout, on a 2s interval.
-*/
-func (b *Builder) WaitForBuildCompletion(timeout time.Duration) (string, error) {
-	b.log.Info("Waiting for build to complete...")
-
-	startTime := time.Now()
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	timeoutChan := time.After(timeout)
-
-	for {
-		select {
-		case <-ticker.C:
-			elapsed := time.Since(startTime)
-
-			distPath := filepath.Join(b.workDir, "dist")
-			if _, err := os.Stat(distPath); err == nil {
-				b.log.Successf("Build directory found after %v", elapsed)
-				return distPath, nil
-			}
-
-			buildPath := filepath.Join(b.workDir, "build")
-			if _, err := os.Stat(buildPath); err == nil {
-				b.log.Successf("Build directory found after %v", elapsed)
-				return buildPath, nil
-			}
-
-			b.log.Infof("Waiting for build to complete... (%v elapsed)", elapsed.Round(time.Second))
-
-		case <-timeoutChan:
-			return "", fmt.Errorf("build timeout: directory not created after %v", timeout)
-		}
-	}
 }

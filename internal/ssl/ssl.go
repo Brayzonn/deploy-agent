@@ -2,11 +2,14 @@ package ssl
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 )
+
+const certbotTimeout = 5 * time.Minute
 
 type SSLManager struct {
 	domain        string
@@ -62,18 +65,16 @@ func (s *SSLManager) RequestCertificate() error {
 
 	args = append(args, domains...)
 
-	cmd := exec.Command("sudo", args...)
-	output, err := cmd.CombinedOutput()
-
+	output, err := run.Cmd(certbotTimeout, "", "sudo", args...)
 	if err != nil {
-		if strings.Contains(string(output), "too many certificates") {
+		if strings.Contains(output, "too many certificates") {
 			s.log.Warning("Let's Encrypt rate limit reached")
 			return nil
 		}
-		return fmt.Errorf("certbot failed: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("certbot failed: %w\nOutput: %s", err, output)
 	}
 
-	if strings.Contains(string(output), "Certificate not yet due for renewal") {
+	if strings.Contains(output, "Certificate not yet due for renewal") {
 		s.log.Info("SSL certificate already exists and is valid")
 	} else {
 		s.log.Success("SSL certificate obtained successfully")
@@ -87,11 +88,9 @@ func (s *SSLManager) RequestCertificate() error {
 func (s *SSLManager) RenewCertificate() error {
 	s.log.Info("Renewing SSL certificate...")
 
-	cmd := exec.Command("sudo", "certbot", "renew", "--nginx", "--non-interactive")
-	output, err := cmd.CombinedOutput()
-
+	output, err := run.Cmd(certbotTimeout, "", "sudo", "certbot", "renew", "--nginx", "--non-interactive")
 	if err != nil {
-		return fmt.Errorf("failed to renew certificate: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to renew certificate: %w\nOutput: %s", err, output)
 	}
 
 	s.log.Success("SSL certificate renewed successfully")

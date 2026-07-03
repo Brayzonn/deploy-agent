@@ -3,11 +3,20 @@ package git
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/run"
+)
+
+// Timeouts per operation class: quick local queries, network
+// transfers, and working-tree rewrites.
+const (
+	queryTimeout    = 30 * time.Second
+	transferTimeout = 10 * time.Minute
+	checkoutTimeout = 2 * time.Minute
 )
 
 type GitManager struct {
@@ -57,16 +66,13 @@ tracked files. Untracked files are excluded — SyncToCommit leaves
 them alone, so they aren't at risk.
 */
 func (g *GitManager) LocalChanges() ([]string, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = g.repoDir
-
-	output, err := cmd.Output()
+	output, err := run.Out(queryTimeout, g.repoDir, "git", "status", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("failed to check git status: %w", err)
 	}
 
 	var changes []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(output)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
 		if line == "" || strings.HasPrefix(line, "??") {
 			continue
 		}
@@ -90,22 +96,16 @@ are discarded; untracked files are left alone.
 func (g *GitManager) SyncToCommit(commit string) error {
 	g.log.Infof("Syncing checkout to %s@%s...", g.branch, short(commit))
 
-	fetchCmd := exec.Command("git", "fetch", "origin", g.branch)
-	fetchCmd.Dir = g.repoDir
-	if output, err := fetchCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to fetch origin/%s: %w\nOutput: %s", g.branch, err, string(output))
+	if output, err := run.Cmd(transferTimeout, g.repoDir, "git", "fetch", "origin", g.branch); err != nil {
+		return fmt.Errorf("failed to fetch origin/%s: %w\nOutput: %s", g.branch, err, output)
 	}
 
-	verifyCmd := exec.Command("git", "cat-file", "-e", commit+"^{commit}")
-	verifyCmd.Dir = g.repoDir
-	if err := verifyCmd.Run(); err != nil {
+	if _, err := run.Cmd(queryTimeout, g.repoDir, "git", "cat-file", "-e", commit+"^{commit}"); err != nil {
 		return fmt.Errorf("commit %s not found after fetching origin/%s — likely removed by a force push; the push that replaced it triggers its own deploy", short(commit), g.branch)
 	}
 
-	checkoutCmd := exec.Command("git", "checkout", "-f", "-B", g.branch, commit)
-	checkoutCmd.Dir = g.repoDir
-	if output, err := checkoutCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to check out commit %s: %w\nOutput: %s", short(commit), err, string(output))
+	if output, err := run.Cmd(checkoutTimeout, g.repoDir, "git", "checkout", "-f", "-B", g.branch, commit); err != nil {
+		return fmt.Errorf("failed to check out commit %s: %w\nOutput: %s", short(commit), err, output)
 	}
 
 	g.log.Successf("Checkout is at %s@%s", g.branch, short(commit))
@@ -132,10 +132,9 @@ func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 		return false, fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
-	cmd := exec.Command("git", "clone", repoURL, g.repoDir)
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(transferTimeout, "", "git", "clone", repoURL, g.repoDir)
 	if err != nil {
-		return false, fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
+		return false, fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, output)
 	}
 
 	g.log.Successf("Repository cloned successfully to %s", g.repoDir)
@@ -146,12 +145,9 @@ func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 func (g *GitManager) ResetHard(commit string) error {
 	g.log.Warningf("Resetting repository to commit %s...", short(commit))
 
-	cmd := exec.Command("git", "reset", "--hard", commit)
-	cmd.Dir = g.repoDir
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(checkoutTimeout, g.repoDir, "git", "reset", "--hard", commit)
 	if err != nil {
-		return fmt.Errorf("git reset failed: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("git reset failed: %w\nOutput: %s", err, output)
 	}
 
 	g.log.Successf("Repository reset to %s", short(commit))
@@ -164,15 +160,12 @@ func (g *GitManager) ResetHard(commit string) error {
 
 /* GetCurrentCommit returns the current HEAD commit hash. */
 func (g *GitManager) GetCurrentCommit() (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = g.repoDir
-
-	output, err := cmd.Output()
+	output, err := run.Out(queryTimeout, g.repoDir, "git", "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("failed to get current commit: %w", err)
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(output), nil
 }
 
 // ============================================================

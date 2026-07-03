@@ -68,37 +68,40 @@ func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 			return result, err
 		}
 
-		s.log.Info("Waiting for build output to stabilize...")
-		outputDir, err := s.builder.WaitForBuildCompletion(120 * time.Second)
-		if err != nil {
-			return nil, fmt.Errorf("build timeout: %w", err)
+		if err := s.validateEntryPoint(result.OutputDir); err != nil {
+			return nil, err
 		}
 
-		time.Sleep(3 * time.Second)
-
-		mainFile := filepath.Join(outputDir, "main.js")
-		if _, err := os.Stat(mainFile); os.IsNotExist(err) {
-			s.log.Warning("main.js not found, checking for alternative entry points...")
-			altFiles := []string{"app.js", "index.js", "server.js"}
-			found := false
-			for _, altFile := range altFiles {
-				altPath := filepath.Join(outputDir, altFile)
-				if _, err := os.Stat(altPath); err == nil {
-					s.log.Infof("Found alternative entry point: %s", altFile)
-					found = true
-					break
-				}
-			}
-			if !found {
-				return nil, fmt.Errorf("build completed but no entry file found in %s", outputDir)
-			}
-		}
-
-		result.OutputDir = outputDir
 		return result, nil
 	}
 
 	return nil, fmt.Errorf("unsupported project type: %s", s.projectType)
+}
+
+/*
+validateEntryPoint confirms the build output contains a runnable
+entry file: the configured ServerEntry when set (resolved relative
+to the output dir, so nest-style dist/src/main.js works), otherwise
+one of the conventional names at the output root.
+*/
+func (s *ServerBuilder) validateEntryPoint(outputDir string) error {
+	if s.serverEntry != "" {
+		entry := filepath.Join(outputDir, s.serverEntry)
+		if _, err := os.Stat(entry); err != nil {
+			return fmt.Errorf("configured server entry not found in build output: %s", entry)
+		}
+		s.log.Infof("Server entry validated: %s", entry)
+		return nil
+	}
+
+	for _, name := range []string{"main.js", "app.js", "index.js", "server.js"} {
+		if _, err := os.Stat(filepath.Join(outputDir, name)); err == nil {
+			s.log.Infof("Found entry point: %s", name)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("build completed but no entry file found in %s", outputDir)
 }
 
 // ============================================================

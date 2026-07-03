@@ -3,13 +3,22 @@ package build
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
+)
+
+// Timeouts per operation class: quick docker/compose queries, image
+// builds, stack up/down, and migration runs.
+const (
+	dockerQueryTimeout = 1 * time.Minute
+	dockerBuildTimeout = 30 * time.Minute
+	stackTimeout       = 5 * time.Minute
+	migrationTimeout   = 10 * time.Minute
 )
 
 type DockerBuilder struct {
@@ -73,39 +82,33 @@ compose resolves instead of guessing a naming convention.
 func (d *DockerBuilder) tagPreviousImages() {
 	d.prevImages = nil
 
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
-	cmd.Dir = d.workDir
-	out, err := cmd.Output()
+	out, err := run.Out(dockerQueryTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "config", "--services")
 	if err != nil {
 		d.log.Warningf("Could not list compose services for pre-tagging: %v", err)
 		return
 	}
 
-	for svc := range strings.FieldsSeq(string(out)) {
-		psCmd := exec.Command("docker-compose", "-f", d.composeFile, "ps", "-q", svc)
-		psCmd.Dir = d.workDir
-		containerID, err := psCmd.Output()
-		if err != nil || strings.TrimSpace(string(containerID)) == "" {
+	for svc := range strings.FieldsSeq(out) {
+		containerID, err := run.Out(dockerQueryTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "ps", "-q", svc)
+		if err != nil || strings.TrimSpace(containerID) == "" {
 			continue
 		}
 
-		inspectCmd := exec.Command("docker", "inspect",
+		info, err := run.Out(dockerQueryTimeout, d.workDir, "docker", "inspect",
 			"--format", "{{.Image}}|{{.Config.Image}}",
-			strings.TrimSpace(string(containerID)),
+			strings.TrimSpace(containerID),
 		)
-		info, err := inspectCmd.Output()
 		if err != nil {
 			continue
 		}
 
-		imageID, imageName, ok := strings.Cut(strings.TrimSpace(string(info)), "|")
+		imageID, imageName, ok := strings.Cut(strings.TrimSpace(info), "|")
 		if !ok || imageID == "" || imageName == "" {
 			continue
 		}
 
 		prevTag := fmt.Sprintf("%s-%s:previous", d.projectName(), svc)
-		tagCmd := exec.Command("docker", "tag", imageID, prevTag)
-		if err := tagCmd.Run(); err != nil {
+		if _, err := run.Cmd(dockerQueryTimeout, d.workDir, "docker", "tag", imageID, prevTag); err != nil {
 			d.log.Warningf("Could not tag previous image for %s: %v", svc, err)
 			continue
 		}
@@ -123,7 +126,7 @@ func (d *DockerBuilder) tagPreviousImages() {
 /* cleanPreviousTags removes the ":previous" tags after a successful deployment. */
 func (d *DockerBuilder) cleanPreviousTags() {
 	for _, prev := range d.prevImages {
-		exec.Command("docker", "rmi", prev.prevTag).Run()
+		run.Cmd(dockerQueryTimeout, d.workDir, "docker", "rmi", prev.prevTag)
 	}
 	d.prevImages = nil
 }
@@ -157,19 +160,16 @@ func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
 		d.log.Warningf("Env file not found: %s", d.envFile)
 	}
 
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "build")
-	cmd.Dir = d.workDir
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(dockerBuildTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "build")
 	duration := time.Since(startTime)
 
 	if err != nil {
 		d.log.Errorf("Docker build failed after %v", duration)
-		d.log.Error(string(output))
+		d.log.Error(output)
 		return &types.BuildOutput{
 			Success:  false,
 			Duration: duration,
-			Error:    fmt.Errorf("docker build failed: %w\nOutput: %s", err, string(output)),
+			Error:    fmt.Errorf("docker build failed: %w\nOutput: %s", err, output),
 		}, err
 	}
 
@@ -195,12 +195,9 @@ func (d *DockerBuilder) Deploy() error {
 	d.log.Info("Deploying Docker containers...")
 
 	d.log.Info("Starting containers...")
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--remove-orphans")
-	cmd.Dir = d.workDir
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(stackTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "up", "-d", "--remove-orphans")
 	if err != nil {
-		return fmt.Errorf("failed to start containers: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to start containers: %w\nOutput: %s", err, output)
 	}
 
 	d.log.Info("Waiting for containers to be healthy...")
@@ -229,12 +226,10 @@ func (d *DockerBuilder) StartInfra(services []string) error {
 	d.log.Infof("Starting infra services: %s", strings.Join(services, ", "))
 	args := []string{"-f", d.composeFile, "up", "-d"}
 	args = append(args, services...)
-	cmd := exec.Command("docker-compose", args...)
-	cmd.Dir = d.workDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(stackTimeout, d.workDir, "docker-compose", args...)
 	if err != nil {
-		return fmt.Errorf("failed to start infra services: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to start infra services: %w\nOutput: %s", err, output)
 	}
 
 	d.log.Info("Waiting for infra services to be ready...")
@@ -257,16 +252,14 @@ func (d *DockerBuilder) RunMigrations(migrationCmd string) error {
 
 	args := []string{"-f", d.composeFile, "run", "--rm", "api"}
 	args = append(args, parts...)
-	cmd := exec.Command("docker-compose", args...)
-	cmd.Dir = d.workDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(migrationTimeout, d.workDir, "docker-compose", args...)
 	if err != nil {
-		return fmt.Errorf("migrations failed: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("migrations failed: %w\nOutput: %s", err, output)
 	}
 
 	d.log.Success("Migrations completed successfully")
-	d.log.Info(string(output))
+	d.log.Info(output)
 	return nil
 }
 
@@ -281,14 +274,12 @@ polling actual container state instead of substring-matching ps
 output.
 */
 func (d *DockerBuilder) CheckHealth() error {
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
-	cmd.Dir = d.workDir
-	out, err := cmd.Output()
+	out, err := run.Out(dockerQueryTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "config", "--services")
 	if err != nil {
 		return fmt.Errorf("failed to list compose services: %w", err)
 	}
 
-	return d.waitForServices(strings.Fields(string(out)), 60*time.Second)
+	return d.waitForServices(strings.Fields(out), 60*time.Second)
 }
 
 /*
@@ -325,26 +316,23 @@ unhealthy). A service absent from both is ready.
 */
 func (d *DockerBuilder) serviceStates(services []string) (pending, failed []string) {
 	for _, svc := range services {
-		psCmd := exec.Command("docker-compose", "-f", d.composeFile, "ps", "-q", svc)
-		psCmd.Dir = d.workDir
-		out, err := psCmd.Output()
-		if err != nil || strings.TrimSpace(string(out)) == "" {
+		out, err := run.Out(dockerQueryTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "ps", "-q", svc)
+		if err != nil || strings.TrimSpace(out) == "" {
 			pending = append(pending, fmt.Sprintf("%s (no container)", svc))
 			continue
 		}
 
-		for containerID := range strings.FieldsSeq(string(out)) {
-			inspectCmd := exec.Command("docker", "inspect",
+		for containerID := range strings.FieldsSeq(out) {
+			info, err := run.Out(dockerQueryTimeout, d.workDir, "docker", "inspect",
 				"--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}",
 				containerID,
 			)
-			info, err := inspectCmd.Output()
 			if err != nil {
 				pending = append(pending, fmt.Sprintf("%s (could not inspect)", svc))
 				continue
 			}
 
-			status, healthStatus, _ := strings.Cut(strings.TrimSpace(string(info)), "|")
+			status, healthStatus, _ := strings.Cut(strings.TrimSpace(info), "|")
 			switch {
 			case status == "exited" || status == "dead" || healthStatus == "unhealthy":
 				failed = append(failed, fmt.Sprintf("%s (%s%s)", svc, status, healthSuffix(healthStatus)))
@@ -379,15 +367,12 @@ func (d *DockerBuilder) GetLogs(service string, tail int) (string, error) {
 		args = append(args, "--tail", fmt.Sprintf("%d", tail))
 	}
 
-	cmd := exec.Command("docker-compose", args...)
-	cmd.Dir = d.workDir
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(dockerQueryTimeout, d.workDir, "docker-compose", args...)
 	if err != nil {
 		return "", fmt.Errorf("failed to get logs: %w", err)
 	}
 
-	return string(output), nil
+	return output, nil
 }
 
 // ============================================================
@@ -405,9 +390,7 @@ func (d *DockerBuilder) Rollback() error {
 
 	if len(d.prevImages) == 0 {
 		d.log.Warning("No previous images tagged — bringing stack down cleanly")
-		cmd := exec.Command("docker-compose", "-f", d.composeFile, "down")
-		cmd.Dir = d.workDir
-		if err := cmd.Run(); err != nil {
+		if _, err := run.Cmd(stackTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "down"); err != nil {
 			return fmt.Errorf("rollback (down) failed: %w", err)
 		}
 		d.log.Warning("Stack is down — no previous version to restore")
@@ -417,17 +400,14 @@ func (d *DockerBuilder) Rollback() error {
 	d.log.Info("Restoring previous images...")
 
 	for _, prev := range d.prevImages {
-		retagCmd := exec.Command("docker", "tag", prev.prevTag, prev.imageName)
-		if err := retagCmd.Run(); err != nil {
+		if _, err := run.Cmd(dockerQueryTimeout, d.workDir, "docker", "tag", prev.prevTag, prev.imageName); err != nil {
 			d.log.Warningf("Could not retag %s onto %s for service %s: %v",
 				prev.prevTag, prev.imageName, prev.service, err)
 		}
 	}
 
-	upCmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--no-build", "--remove-orphans")
-	upCmd.Dir = d.workDir
-	if output, err := upCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to bring up previous containers: %w\nOutput: %s", err, string(output))
+	if output, err := run.Cmd(stackTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "up", "-d", "--no-build", "--remove-orphans"); err != nil {
+		return fmt.Errorf("failed to bring up previous containers: %w\nOutput: %s", err, output)
 	}
 
 	// Keep the :previous tags around for manual recovery if verification fails.
@@ -449,25 +429,22 @@ func (d *DockerBuilder) verifyRollback() error {
 	var wrong []string
 
 	for _, prev := range d.prevImages {
-		psCmd := exec.Command("docker-compose", "-f", d.composeFile, "ps", "-q", prev.service)
-		psCmd.Dir = d.workDir
-		containerID, err := psCmd.Output()
-		if err != nil || strings.TrimSpace(string(containerID)) == "" {
+		containerID, err := run.Out(dockerQueryTimeout, d.workDir, "docker-compose", "-f", d.composeFile, "ps", "-q", prev.service)
+		if err != nil || strings.TrimSpace(containerID) == "" {
 			wrong = append(wrong, fmt.Sprintf("%s (not running)", prev.service))
 			continue
 		}
 
-		imgCmd := exec.Command("docker", "inspect",
+		imageID, err := run.Out(dockerQueryTimeout, d.workDir, "docker", "inspect",
 			"--format", "{{.Image}}",
-			strings.TrimSpace(string(containerID)),
+			strings.TrimSpace(containerID),
 		)
-		imageID, err := imgCmd.Output()
 		if err != nil {
 			wrong = append(wrong, fmt.Sprintf("%s (could not inspect container)", prev.service))
 			continue
 		}
 
-		if strings.TrimSpace(string(imageID)) != prev.imageID {
+		if strings.TrimSpace(imageID) != prev.imageID {
 			wrong = append(wrong, fmt.Sprintf("%s (still running the new image)", prev.service))
 		}
 	}

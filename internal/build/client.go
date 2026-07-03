@@ -3,17 +3,22 @@ package build
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
 )
 
-const defaultBackupParent = "/var/tmp/deployment-backups"
+const (
+	defaultBackupParent = "/var/tmp/deployment-backups"
+
+	copyTimeout    = 10 * time.Minute
+	serviceTimeout = 1 * time.Minute
+)
 
 type ClientBuilder struct {
 	builder      *Builder
@@ -137,9 +142,8 @@ func (c *ClientBuilder) backupWebRoot() (string, error) {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	cmd := exec.Command("cp", "-r", c.webRoot, backupDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("backup copy failed: %w\nOutput: %s", err, string(output))
+	if output, err := run.Cmd(copyTimeout, "", "cp", "-r", c.webRoot, backupDir); err != nil {
+		return "", fmt.Errorf("backup copy failed: %w\nOutput: %s", err, output)
 	}
 
 	c.log.Successf("Backup created: %s", backupDir)
@@ -206,11 +210,9 @@ func (c *ClientBuilder) clearWebRoot() error {
 
 /* copyToWebRoot copies files from the build output into the web root. */
 func (c *ClientBuilder) copyToWebRoot(buildOutput string) error {
-	cmd := exec.Command("cp", "-r", buildOutput+"/.", c.webRoot+"/")
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(copyTimeout, "", "cp", "-r", buildOutput+"/.", c.webRoot+"/")
 	if err != nil {
-		return fmt.Errorf("copy failed: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("copy failed: %w\nOutput: %s", err, output)
 	}
 
 	return nil
@@ -245,11 +247,9 @@ func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	}
 
 	c.log.Info("Copying backup files to web root...")
-	cmd := exec.Command("cp", "-r", backupDir+"/.", c.webRoot+"/")
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(copyTimeout, "", "cp", "-r", backupDir+"/.", c.webRoot+"/")
 	if err != nil {
-		return fmt.Errorf("failed to restore backup: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to restore backup: %w\nOutput: %s", err, output)
 	}
 
 	c.RestartNginx()
@@ -277,8 +277,7 @@ func (c *ClientBuilder) RestartNginx() error {
 	}
 
 	for _, cmdArgs := range commands {
-		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-		if err := cmd.Run(); err == nil {
+		if _, err := run.Cmd(serviceTimeout, "", cmdArgs[0], cmdArgs[1:]...); err == nil {
 			c.log.Success("Nginx restarted successfully")
 			return nil
 		}

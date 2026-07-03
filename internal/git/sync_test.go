@@ -14,8 +14,8 @@ import (
 // Helpers
 // ============================================================
 
-/* run executes a command in dir and fails the test on error. */
-func run(t *testing.T, dir string, args ...string) string {
+/* mustRun executes a command in dir and fails the test on error. */
+func mustRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = dir
@@ -35,9 +35,9 @@ func commit(t *testing.T, dir, file, content, msg string) string {
 	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	run(t, dir, "git", "add", "-A")
-	run(t, dir, "git", "commit", "-m", msg)
-	return run(t, dir, "git", "rev-parse", "HEAD")
+	mustRun(t, dir, "git", "add", "-A")
+	mustRun(t, dir, "git", "commit", "-m", msg)
+	return mustRun(t, dir, "git", "rev-parse", "HEAD")
 }
 
 // ============================================================
@@ -61,16 +61,16 @@ func TestSyncScenarios(t *testing.T) {
 	// Upstream repo with main + develop
 	origin := filepath.Join(tmp, "origin")
 	os.MkdirAll(origin, 0755)
-	run(t, origin, "git", "init", "-b", "main")
+	mustRun(t, origin, "git", "init", "-b", "main")
 	c1 := commit(t, origin, "app.txt", "v1", "c1")
-	run(t, origin, "git", "checkout", "-b", "develop")
+	mustRun(t, origin, "git", "checkout", "-b", "develop")
 	commit(t, origin, "app.txt", "dev", "dev work")
-	run(t, origin, "git", "checkout", "main")
+	mustRun(t, origin, "git", "checkout", "main")
 	c2 := commit(t, origin, "app.txt", "v2", "c2")
 
 	// Deploy checkout
 	deployDir := filepath.Join(tmp, "deploy")
-	run(t, tmp, "git", "clone", origin, deployDir)
+	mustRun(t, tmp, "git", "clone", origin, deployDir)
 	g := New(deployDir, "main", log)
 
 	// 1. Plain sync to the webhook commit
@@ -83,7 +83,7 @@ func TestSyncScenarios(t *testing.T) {
 
 	// 2. Wrong branch checked out (the old code would have merged) + dirty
 	// tracked file + untracked file that must survive
-	run(t, deployDir, "git", "checkout", "develop")
+	mustRun(t, deployDir, "git", "checkout", "develop")
 	os.WriteFile(filepath.Join(deployDir, "app.txt"), []byte("hand-edit"), 0644)
 	os.WriteFile(filepath.Join(deployDir, ".env.production"), []byte("SECRET=1"), 0600)
 
@@ -98,7 +98,7 @@ func TestSyncScenarios(t *testing.T) {
 	if got, _ := g.GetCurrentCommit(); got != c2 {
 		t.Fatalf("scenario 2: HEAD = %s, want %s", got, c2)
 	}
-	if branch := run(t, deployDir, "git", "branch", "--show-current"); branch != "main" {
+	if branch := mustRun(t, deployDir, "git", "branch", "--show-current"); branch != "main" {
 		t.Fatalf("scenario 2: on branch %q, want main", branch)
 	}
 	if body, _ := os.ReadFile(filepath.Join(deployDir, "app.txt")); string(body) != "v2" {
@@ -109,7 +109,7 @@ func TestSyncScenarios(t *testing.T) {
 	}
 
 	// 3. Force push upstream: sync to the new commit must succeed
-	run(t, origin, "git", "reset", "--hard", c1)
+	mustRun(t, origin, "git", "reset", "--hard", c1)
 	c3 := commit(t, origin, "app.txt", "v3", "c3 (rewrote history)")
 	if err := g.SyncToCommit(c3); err != nil {
 		t.Fatalf("scenario 3 (force push): %v", err)

@@ -3,12 +3,15 @@ package nginx
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
 )
+
+const nginxTimeout = 1 * time.Minute
 
 type NginxManager struct {
 	domain        string
@@ -80,12 +83,9 @@ func (n *NginxManager) GenerateConfig() (bool, error) {
 		return false, fmt.Errorf("unsupported project type for nginx: %s", n.projectType)
 	}
 
-	cmd := exec.Command("sudo", "tee", n.availablePath())
-	cmd.Stdin = strings.NewReader(config)
-
-	output, err := cmd.CombinedOutput()
+	output, err := run.Stdin(nginxTimeout, "", strings.NewReader(config), "sudo", "tee", n.availablePath())
 	if err != nil {
-		return false, fmt.Errorf("failed to write nginx config: %w\nOutput: %s", err, string(output))
+		return false, fmt.Errorf("failed to write nginx config: %w\nOutput: %s", err, output)
 	}
 
 	n.log.Successf("Nginx config created: %s", n.availablePath())
@@ -109,8 +109,7 @@ func (n *NginxManager) EnableSite() (bool, error) {
 
 	n.log.Info("Enabling nginx site...")
 
-	cmd := exec.Command("sudo", "ln", "-s", n.availablePath(), n.enabledPath())
-	if err := cmd.Run(); err != nil {
+	if _, err := run.Cmd(nginxTimeout, "", "sudo", "ln", "-s", n.availablePath(), n.enabledPath()); err != nil {
 		return false, fmt.Errorf("failed to enable site: %w", err)
 	}
 
@@ -122,10 +121,9 @@ func (n *NginxManager) EnableSite() (bool, error) {
 func (n *NginxManager) TestConfig() error {
 	n.log.Info("Testing nginx configuration...")
 
-	cmd := exec.Command("sudo", "nginx", "-t")
-	output, err := cmd.CombinedOutput()
+	output, err := run.Cmd(nginxTimeout, "", "sudo", "nginx", "-t")
 	if err != nil {
-		return fmt.Errorf("nginx config test failed: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("nginx config test failed: %w\nOutput: %s", err, output)
 	}
 
 	n.log.Success("Nginx configuration is valid")
@@ -136,8 +134,7 @@ func (n *NginxManager) TestConfig() error {
 func (n *NginxManager) Reload() error {
 	n.log.Info("Reloading nginx...")
 
-	cmd := exec.Command("sudo", "systemctl", "reload", "nginx")
-	if err := cmd.Run(); err != nil {
+	if _, err := run.Cmd(nginxTimeout, "", "sudo", "systemctl", "reload", "nginx"); err != nil {
 		return fmt.Errorf("failed to reload nginx: %w", err)
 	}
 
@@ -153,7 +150,7 @@ project. Pre-existing files are never touched.
 */
 func (n *NginxManager) removeCreated(createdConfig, enabledSite bool) {
 	if enabledSite {
-		if err := exec.Command("sudo", "rm", "-f", n.enabledPath()).Run(); err != nil {
+		if _, err := run.Cmd(nginxTimeout, "", "sudo", "rm", "-f", n.enabledPath()); err != nil {
 			n.log.Errorf("Failed to remove broken nginx symlink %s — remove it manually or all nginx reloads will fail: %v", n.enabledPath(), err)
 		} else {
 			n.log.Warningf("Removed nginx symlink %s", n.enabledPath())
@@ -161,7 +158,7 @@ func (n *NginxManager) removeCreated(createdConfig, enabledSite bool) {
 	}
 
 	if createdConfig {
-		if err := exec.Command("sudo", "rm", "-f", n.availablePath()).Run(); err != nil {
+		if _, err := run.Cmd(nginxTimeout, "", "sudo", "rm", "-f", n.availablePath()); err != nil {
 			n.log.Errorf("Failed to remove broken nginx config %s — remove it manually: %v", n.availablePath(), err)
 		} else {
 			n.log.Warningf("Removed nginx config %s", n.availablePath())
