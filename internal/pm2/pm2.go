@@ -10,7 +10,6 @@ import (
 	"github.com/Brayzonn/deploy-agent/internal/logger"
 )
 
-
 type PM2Manager struct {
 	appName string
 	workDir string
@@ -24,6 +23,11 @@ type PM2Process struct {
 	} `json:"pm2_env"`
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* New creates a PM2Manager for the given app name and working directory. */
 func New(appName, workDir string, log *logger.Logger) *PM2Manager {
 	return &PM2Manager{
 		appName: appName,
@@ -32,12 +36,17 @@ func New(appName, workDir string, log *logger.Logger) *PM2Manager {
 	}
 }
 
+/* IsInstalled reports whether the pm2 CLI is available on PATH. */
 func IsInstalled() bool {
 	cmd := exec.Command("pm2", "--version")
 	return cmd.Run() == nil
 }
 
-//  checks if the PM2 app exists
+// ============================================================
+// Status
+// ============================================================
+
+/* AppExists checks whether the PM2 app is present in `pm2 jlist`. */
 func (p *PM2Manager) AppExists() (bool, error) {
 	cmd := exec.Command("pm2", "jlist")
 	output, err := cmd.Output()
@@ -59,7 +68,7 @@ func (p *PM2Manager) AppExists() (bool, error) {
 	return false, nil
 }
 
-//  returns the current status of the PM2 app
+/* GetStatus returns the current PM2 status string for the app (e.g. "online"). */
 func (p *PM2Manager) GetStatus() (string, error) {
 	cmd := exec.Command("pm2", "jlist")
 	output, err := cmd.Output()
@@ -81,13 +90,17 @@ func (p *PM2Manager) GetStatus() (string, error) {
 	return "", fmt.Errorf("app not found: %s", p.appName)
 }
 
-//  starts the PM2 app using ecosystem file
+// ============================================================
+// Process management
+// ============================================================
+
+/* Start starts the PM2 app from the given ecosystem file. */
 func (p *PM2Manager) Start(ecosystemFile string) error {
 	p.log.Infof("Starting PM2 app '%s' with ecosystem file...", p.appName)
-	
+
 	cmd := exec.Command("pm2", "start", ecosystemFile)
 	cmd.Dir = p.workDir
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start PM2 app: %w\nOutput: %s", err, string(output))
@@ -96,10 +109,13 @@ func (p *PM2Manager) Start(ecosystemFile string) error {
 	return nil
 }
 
-//  restarts the PM2 app
+/*
+Restart restarts the PM2 app, preferring the ecosystem file when one
+is given and falling back to restarting by app name.
+*/
 func (p *PM2Manager) Restart(ecosystemFile string) error {
 	p.log.Infof("Restarting PM2 app '%s'...", p.appName)
-	
+
 	var cmd *exec.Cmd
 	if ecosystemFile != "" {
 		cmd = exec.Command("pm2", "restart", ecosystemFile)
@@ -107,7 +123,7 @@ func (p *PM2Manager) Restart(ecosystemFile string) error {
 		cmd = exec.Command("pm2", "restart", p.appName)
 	}
 	cmd.Dir = p.workDir
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restart PM2 app: %w\nOutput: %s", err, string(output))
@@ -116,13 +132,13 @@ func (p *PM2Manager) Restart(ecosystemFile string) error {
 	return nil
 }
 
-//  deletes the PM2 app
+/* Delete deletes the PM2 app. */
 func (p *PM2Manager) Delete() error {
 	p.log.Infof("Deleting PM2 app '%s'...", p.appName)
-	
+
 	cmd := exec.Command("pm2", "delete", p.appName)
 	cmd.Dir = p.workDir
-	
+
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to delete PM2 app: %w", err)
 	}
@@ -130,33 +146,37 @@ func (p *PM2Manager) Delete() error {
 	return nil
 }
 
-//  ensures the PM2 app is running
+/*
+EnsureRunning polls the app's status and nudges it toward "online":
+starting it if missing, restarting it if stopped, and deleting and
+recreating it if errored. Gives up after maxAttempts.
+*/
 func (p *PM2Manager) EnsureRunning(ecosystemFile string, maxAttempts int) error {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		status, err := p.GetStatus()
-		
+
 		switch {
 		case err != nil && strings.Contains(err.Error(), "app not found"):
 			p.log.Infof("Creating new PM2 app '%s' (attempt %d/%d)...", p.appName, attempt, maxAttempts)
 			if err := p.Start(ecosystemFile); err != nil {
 				p.log.Warningf("Failed to start PM2 app: %v", err)
 			}
-			
+
 		case status == "online":
 			p.log.Successf("PM2 app '%s' is running", p.appName)
 			return nil
-			
+
 		case status == "stopped" || status == "stopping":
 			p.log.Infof("PM2 app '%s' is stopped, restarting...", p.appName)
 			if err := p.Restart(""); err != nil {
 				p.log.Warningf("Failed to restart PM2 app: %v", err)
 			}
-			
+
 		case status == "errored":
 			p.log.Warning("PM2 app has errored, deleting and recreating...")
 			p.Delete()
 		}
-		
+
 		time.Sleep(3 * time.Second)
 	}
 
@@ -164,7 +184,7 @@ func (p *PM2Manager) EnsureRunning(ecosystemFile string, maxAttempts int) error 
 	if err != nil {
 		return fmt.Errorf("PM2 app not running after %d attempts: %w", maxAttempts, err)
 	}
-	
+
 	if status != "online" {
 		return fmt.Errorf("PM2 app status is '%s' after %d attempts", status, maxAttempts)
 	}
@@ -172,7 +192,11 @@ func (p *PM2Manager) EnsureRunning(ecosystemFile string, maxAttempts int) error 
 	return nil
 }
 
-// Save saves the PM2 process list
+// ============================================================
+// Persistence
+// ============================================================
+
+/* Save persists the current PM2 process list so it survives a reboot. */
 func (p *PM2Manager) Save() error {
 	cmd := exec.Command("pm2", "save")
 	if err := cmd.Run(); err != nil {

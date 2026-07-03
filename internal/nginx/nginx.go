@@ -15,10 +15,15 @@ type NginxManager struct {
 	domainAliases []string
 	webRoot       string
 	projectType   types.ProjectType
-	port          int 
+	port          int
 	log           *logger.Logger
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* New creates an NginxManager for the given site. */
 func New(domain string, domainAliases []string, webRoot string, projectType types.ProjectType, port int, log *logger.Logger) *NginxManager {
 	return &NginxManager{
 		domain:        domain,
@@ -30,13 +35,22 @@ func New(domain string, domainAliases []string, webRoot string, projectType type
 	}
 }
 
+// ============================================================
+// Config management
+// ============================================================
+
+/* ConfigExists reports whether an nginx config already exists for the domain. */
 func (n *NginxManager) ConfigExists() bool {
 	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
 	_, err := os.Stat(configPath)
 	return err == nil
 }
 
-//  creates nginx configuration file
+/*
+GenerateConfig writes an nginx config for the domain, choosing a
+static-file template for client projects and a reverse-proxy
+template for everything else. No-ops if a config already exists.
+*/
 func (n *NginxManager) GenerateConfig() error {
 	if n.ConfigExists() {
 		n.log.Info("Nginx config already exists, skipping generation")
@@ -56,7 +70,7 @@ func (n *NginxManager) GenerateConfig() error {
 	}
 
 	configPath := fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
-	
+
 	cmd := exec.Command("sudo", "tee", configPath)
 	cmd.Stdin = strings.NewReader(config)
 
@@ -69,7 +83,11 @@ func (n *NginxManager) GenerateConfig() error {
 	return nil
 }
 
-// EnableSite enables the nginx site
+// ============================================================
+// Site management
+// ============================================================
+
+/* EnableSite symlinks the site into sites-enabled, if not already enabled. */
 func (n *NginxManager) EnableSite() error {
 	sourcePath := fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
 	targetPath := fmt.Sprintf("/etc/nginx/sites-enabled/%s", n.domain)
@@ -90,7 +108,7 @@ func (n *NginxManager) EnableSite() error {
 	return nil
 }
 
-// validates nginx configuration
+/* TestConfig validates the nginx configuration via `nginx -t`. */
 func (n *NginxManager) TestConfig() error {
 	n.log.Info("Testing nginx configuration...")
 
@@ -104,7 +122,7 @@ func (n *NginxManager) TestConfig() error {
 	return nil
 }
 
-// reloads nginx
+/* Reload reloads the nginx service to pick up config changes. */
 func (n *NginxManager) Reload() error {
 	n.log.Info("Reloading nginx...")
 
@@ -117,7 +135,14 @@ func (n *NginxManager) Reload() error {
 	return nil
 }
 
-// Setup 
+// ============================================================
+// Orchestration
+// ============================================================
+
+/*
+Setup runs the full nginx setup sequence for a site: generate the
+config, enable it, test it, then reload nginx.
+*/
 func (n *NginxManager) Setup() error {
 	if err := n.GenerateConfig(); err != nil {
 		return err

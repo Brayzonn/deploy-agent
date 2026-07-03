@@ -5,6 +5,15 @@ import (
 	"strings"
 )
 
+// ============================================================
+// Config templates
+// ============================================================
+
+/*
+generateClientConfig builds a static-file server block: serves
+webRoot directly, falls back to index.html for client-side routing,
+and adds standard security headers, gzip, and asset caching.
+*/
 func (n *NginxManager) generateClientConfig() string {
 	serverNames := n.domain
 	if len(n.domainAliases) > 0 {
@@ -39,7 +48,11 @@ func (n *NginxManager) generateClientConfig() string {
 }`, serverNames, n.webRoot)
 }
 
-//  create nginx config for API reverse proxy
+/*
+generateAPIConfig builds a reverse-proxy server block that forwards
+requests to the app's local port, preserving headers needed for
+WebSocket upgrades and client IP/protocol propagation.
+*/
 func (n *NginxManager) generateAPIConfig() string {
 	serverNames := n.domain
 	if len(n.domainAliases) > 0 {

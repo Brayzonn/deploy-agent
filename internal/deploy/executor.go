@@ -23,9 +23,14 @@ type Executor struct {
 	prevCommit string // commit hash before pull, used for rollback
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* New creates an Executor for the given deployment context. */
 func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *Executor {
 	gitManager := git.New(ctx.Config.RepoDir, ctx.Branch, log)
-	
+
 	return &Executor{
 		ctx:     ctx,
 		cfg:     cfg,
@@ -35,17 +40,27 @@ func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *
 	}
 }
 
+// ============================================================
+// Orchestration
+// ============================================================
+
+/*
+Execute runs a full deployment: clone-or-validate the repo, stash
+any local changes, fetch and check for updates, pull if there are
+any, then hand off to deploy(). Fresh clones skip straight to
+deploy() since there's nothing to pull.
+*/
 func (e *Executor) Execute() error {
 	e.log.State(types.StateStarting)
 	e.log.Infof("Starting deployment for %s", e.ctx.RepoName)
-	e.log.Infof("Branch: %s | Type: %s | Docker: %t | Fullstack: %t", 
+	e.log.Infof("Branch: %s | Type: %s | Docker: %t | Fullstack: %t",
 		e.ctx.Branch, e.ctx.Config.ProjectType, e.ctx.Config.UseDocker, e.ctx.Config.FullStack)
 
 	freshClone, err := e.git.CloneIfMissing(e.ctx.RepoFullName)
 	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
-	
+
 	if err := e.git.Validate(); err != nil {
 		return fmt.Errorf("git validation failed: %w", err)
 	}
@@ -114,7 +129,11 @@ func (e *Executor) Execute() error {
 	return nil
 }
 
-// rollbackGit resets the repo to prevCommit. Safe to call after any failure.
+// ============================================================
+// Rollback
+// ============================================================
+
+/* rollbackGit resets the repo to prevCommit. Safe to call after any failure. */
 func (e *Executor) rollbackGit() {
 	if e.prevCommit == "" {
 		e.log.Warning("No pre-pull commit recorded — cannot rollback git")
@@ -125,7 +144,7 @@ func (e *Executor) rollbackGit() {
 	}
 }
 
-// rollbackServer resets git and restarts PM2 with the previous working build.
+/* rollbackServer resets git and restarts PM2 with the previous working build. */
 func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string) {
 	e.log.Warning("Rolling back server deployment...")
 	e.rollbackGit()
@@ -145,7 +164,11 @@ func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string
 	e.log.Success("Server rolled back successfully")
 }
 
-// stash any uncommitted changes
+// ============================================================
+// Git helpers
+// ============================================================
+
+/* handleUncommittedChanges stashes any uncommitted changes found in the working tree. */
 func (e *Executor) handleUncommittedChanges() error {
 	hasChanges, err := e.git.HasUncommittedChanges()
 	if err != nil {
@@ -163,14 +186,16 @@ func (e *Executor) handleUncommittedChanges() error {
 	return nil
 }
 
-//  handle the actual deployment based on project type
+// ============================================================
+// Deployment strategies
+// ============================================================
+
+/* deploy routes to the right deployment strategy based on the repo's project config. */
 func (e *Executor) deploy() error {
-	// Check if Docker deployment
 	if e.ctx.Config.UseDocker {
 		return e.deployDocker()
 	}
 
-	// Traditional deployments
 	if e.ctx.Config.FullStack {
 		return e.deployFullstack()
 	}
@@ -182,7 +207,13 @@ func (e *Executor) deploy() error {
 	return e.deployServer()
 }
 
-//  deploy using Docker
+/*
+deployDocker builds and deploys a Docker Compose project: build
+images, start infra and run migrations if configured, bring the
+stack up, set up nginx/SSL, run health checks, and roll back on any
+failure along the way. If the project also has a client, it's
+deployed afterward via a temporary config override.
+*/
 func (e *Executor) deployDocker() error {
 	e.log.State(types.StateBuildingDocker)
 	e.log.Info("Deploying with Docker...")
@@ -249,7 +280,7 @@ func (e *Executor) deployDocker() error {
 			e.ctx.Config.Port,
 			e.log,
 		)
-		
+
 		if err := nginxMgr.Setup(); err != nil {
 			e.log.Warningf("Nginx setup failed: %v", err)
 		}
@@ -260,7 +291,7 @@ func (e *Executor) deployDocker() error {
 			e.cfg.SSLEmail,
 			e.log,
 		)
-		
+
 		if err := sslMgr.Setup(); err != nil {
 			e.log.Warningf("SSL setup failed: %v", err)
 		}
@@ -292,7 +323,6 @@ func (e *Executor) deployDocker() error {
 	dockerBuilder.CleanupOnSuccess()
 	e.log.Success("Docker deployment completed successfully!")
 
-	// If this project also has a client to serve via Nginx, deploy it now
 	if e.ctx.Config.ClientWebRoot != "" {
 		e.log.Info("Deploying client application...")
 
@@ -321,12 +351,15 @@ func (e *Executor) deployDocker() error {
 	return nil
 }
 
-//  deploy a frontend-only project
+/*
+deployClient builds a frontend-only project, sets up nginx/SSL if a
+domain is configured, then deploys the build to the web root. On
+deploy failure it attempts to restore the pre-deploy backup.
+*/
 func (e *Executor) deployClient() error {
 	e.log.State(types.StateDeployingClient)
 	e.log.Info("Deploying client application...")
 
-	// Determine client directory
 	clientDir := e.ctx.Config.RepoDir
 	if e.ctx.Config.ClientDir != "" && e.ctx.Config.ClientDir != "." {
 		clientDir = filepath.Join(e.ctx.Config.RepoDir, e.ctx.Config.ClientDir)
@@ -334,7 +367,6 @@ func (e *Executor) deployClient() error {
 
 	e.log.Infof("Client directory: %s", clientDir)
 
-	// Build client
 	clientBuilder := build.NewClientBuilder(clientDir, e.ctx.Config.WebRoot, e.log)
 	buildResult, err := clientBuilder.Build()
 	if err != nil {
@@ -350,7 +382,7 @@ func (e *Executor) deployClient() error {
 			e.ctx.Config.Port,
 			e.log,
 		)
-		
+
 		if err := nginxMgr.Setup(); err != nil {
 			e.log.Warningf("Nginx setup failed: %v", err)
 		}
@@ -361,7 +393,7 @@ func (e *Executor) deployClient() error {
 			e.cfg.SSLEmail,
 			e.log,
 		)
-		
+
 		if err := sslMgr.Setup(); err != nil {
 			e.log.Warningf("SSL setup failed: %v", err)
 		}
@@ -379,7 +411,12 @@ func (e *Executor) deployClient() error {
 	return nil
 }
 
-//  deploys a backend-only project
+/*
+deployServer builds a backend-only project, sets up nginx/SSL if
+configured, deploys via PM2, and runs a health check. Build
+failures reset git; deploy or health-check failures trigger a full
+server rollback.
+*/
 func (e *Executor) deployServer() error {
 	e.log.State(types.StateDeployingServer)
 	e.log.Info("Deploying server API...")
@@ -387,7 +424,6 @@ func (e *Executor) deployServer() error {
 	serverDir := filepath.Join(e.ctx.Config.RepoDir, e.ctx.Config.ServerDir)
 	e.log.Infof("Server directory: %s", serverDir)
 
-	// Build server
 	serverBuilder := build.NewServerBuilder(
 		serverDir,
 		e.ctx.Config.ProjectType,
@@ -399,7 +435,6 @@ func (e *Executor) deployServer() error {
 
 	buildResult, err := serverBuilder.Build()
 	if err != nil {
-		// Build failed — PM2 still serves old dist, just reset git
 		e.rollbackGit()
 		return fmt.Errorf("server build failed: %w", err)
 	}
@@ -430,7 +465,6 @@ func (e *Executor) deployServer() error {
 		}
 	}
 
-	// Deploy with PM2
 	if err := serverBuilder.Deploy(serverDir); err != nil {
 		e.rollbackServer(serverBuilder, serverDir)
 		return fmt.Errorf("server deployment failed: %w", err)
@@ -455,35 +489,39 @@ func (e *Executor) deployServer() error {
 	return nil
 }
 
-// deploy fullstack app
+/*
+deployFullstack deploys the server first, temporarily pointing its
+domain at the "api." subdomain, then restores the original domain
+and deploys the client.
+*/
 func (e *Executor) deployFullstack() error {
-    e.log.State(types.StateDeployingFull)
-    e.log.Info("Deploying fullstack application...")
+	e.log.State(types.StateDeployingFull)
+	e.log.Info("Deploying fullstack application...")
 
-    e.log.Info("Step 1/2: Deploying server...")
-    
-    originalDomain := e.ctx.Config.Domain
-    originalAliases := e.ctx.Config.DomainAliases  
-    
-    if e.ctx.Config.Domain != "" {
-        e.ctx.Config.Domain = "api." + e.ctx.Config.Domain
-        e.ctx.Config.DomainAliases = []string{} 
-    }
+	e.log.Info("Step 1/2: Deploying server...")
 
-    if err := e.deployServer(); err != nil {
-        e.ctx.Config.Domain = originalDomain 
-        e.ctx.Config.DomainAliases = originalAliases  
-        return err
-    }
+	originalDomain := e.ctx.Config.Domain
+	originalAliases := e.ctx.Config.DomainAliases
 
-    e.ctx.Config.Domain = originalDomain
-    e.ctx.Config.DomainAliases = originalAliases  
+	if e.ctx.Config.Domain != "" {
+		e.ctx.Config.Domain = "api." + e.ctx.Config.Domain
+		e.ctx.Config.DomainAliases = []string{}
+	}
 
-    e.log.Info("Step 2/2: Deploying client...")
-    if err := e.deployClient(); err != nil {
-        return err
-    }
+	if err := e.deployServer(); err != nil {
+		e.ctx.Config.Domain = originalDomain
+		e.ctx.Config.DomainAliases = originalAliases
+		return err
+	}
 
-    e.log.Success("Fullstack deployment completed successfully!")
-    return nil
+	e.ctx.Config.Domain = originalDomain
+	e.ctx.Config.DomainAliases = originalAliases
+
+	e.log.Info("Step 2/2: Deploying client...")
+	if err := e.deployClient(); err != nil {
+		return err
+	}
+
+	e.log.Success("Fullstack deployment completed successfully!")
+	return nil
 }

@@ -16,6 +16,11 @@ type GitManager struct {
 	log     *logger.Logger
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* New creates a GitManager for repoDir tracking the given branch. */
 func New(repoDir, branch string, log *logger.Logger) *GitManager {
 	return &GitManager{
 		repoDir: repoDir,
@@ -24,7 +29,11 @@ func New(repoDir, branch string, log *logger.Logger) *GitManager {
 	}
 }
 
-//  check if the directory is a valid git repository
+// ============================================================
+// Validation
+// ============================================================
+
+/* Validate checks that repoDir exists and is a git repository. */
 func (g *GitManager) Validate() error {
 	if _, err := os.Stat(g.repoDir); os.IsNotExist(err) {
 		return fmt.Errorf("repository directory does not exist: %s", g.repoDir)
@@ -38,11 +47,15 @@ func (g *GitManager) Validate() error {
 	return nil
 }
 
-//  check if there are uncommitted changes
+// ============================================================
+// Working tree
+// ============================================================
+
+/* HasUncommittedChanges checks whether the working tree has uncommitted changes. */
 func (g *GitManager) HasUncommittedChanges() (bool, error) {
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = g.repoDir
-	
+
 	output, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("failed to check git status: %w", err)
@@ -51,13 +64,13 @@ func (g *GitManager) HasUncommittedChanges() (bool, error) {
 	return len(strings.TrimSpace(string(output))) > 0, nil
 }
 
-//  stash uncommitted changes
+/* StashChanges stashes uncommitted changes under the given stash name. */
 func (g *GitManager) StashChanges(stashName string) error {
 	g.log.Warning("Uncommitted changes detected. Stashing...")
-	
+
 	cmd := exec.Command("git", "stash", "push", "-m", stashName)
 	cmd.Dir = g.repoDir
-	
+
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stash changes: %w", err)
 	}
@@ -66,13 +79,13 @@ func (g *GitManager) StashChanges(stashName string) error {
 	return nil
 }
 
-//  restore stashed changes
+/* PopStash restores the most recently stashed changes. */
 func (g *GitManager) PopStash() error {
 	g.log.Info("Restoring stashed changes...")
-	
+
 	cmd := exec.Command("git", "stash", "pop")
 	cmd.Dir = g.repoDir
-	
+
 	if err := cmd.Run(); err != nil {
 		g.log.Warning("Failed to restore stashed changes")
 		return err
@@ -82,13 +95,17 @@ func (g *GitManager) PopStash() error {
 	return nil
 }
 
-//  fetche latest changes from remote
+// ============================================================
+// Sync
+// ============================================================
+
+/* Fetch fetches the latest refs from the remote without merging. */
 func (g *GitManager) Fetch() error {
 	g.log.Info("Fetching latest changes from GitHub...")
-	
+
 	cmd := exec.Command("git", "fetch")
 	cmd.Dir = g.repoDir
-	
+
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to fetch from GitHub: %w", err)
 	}
@@ -96,7 +113,10 @@ func (g *GitManager) Fetch() error {
 	return nil
 }
 
-// Returns true if the repo was freshly cloned
+/*
+CloneIfMissing clones the repo into repoDir if it isn't already
+present locally. Returns true if a fresh clone happened.
+*/
 func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 	if _, err := os.Stat(g.repoDir); err == nil {
 		g.log.Info("Repository already exists, skipping clone")
@@ -123,11 +143,8 @@ func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 	return true, nil
 }
 
-
-
-//  check if there are new commits to pull
+/* CheckForUpdates reports whether the local HEAD differs from origin/<branch>. */
 func (g *GitManager) CheckForUpdates() (bool, error) {
-	// Get local HEAD
 	localCmd := exec.Command("git", "rev-parse", "@")
 	localCmd.Dir = g.repoDir
 	localOutput, err := localCmd.Output()
@@ -136,7 +153,6 @@ func (g *GitManager) CheckForUpdates() (bool, error) {
 	}
 	local := strings.TrimSpace(string(localOutput))
 
-	// Get remote HEAD
 	remoteCmd := exec.Command("git", "rev-parse", fmt.Sprintf("origin/%s", g.branch))
 	remoteCmd.Dir = g.repoDir
 	remoteOutput, err := remoteCmd.Output()
@@ -148,7 +164,7 @@ func (g *GitManager) CheckForUpdates() (bool, error) {
 	return local != remote, nil
 }
 
-// ResetHard resets the repo to a specific commit (used for rollback)
+/* ResetHard resets the repo to a specific commit; used to roll back a failed deploy. */
 func (g *GitManager) ResetHard(commit string) error {
 	g.log.Warningf("Resetting repository to commit %s...", commit[:7])
 
@@ -164,13 +180,13 @@ func (g *GitManager) ResetHard(commit string) error {
 	return nil
 }
 
-//  pull latest changes from remote
+/* Pull pulls the latest changes for the tracked branch from the remote. */
 func (g *GitManager) Pull() error {
 	g.log.Info("Pulling latest changes from GitHub...")
-	
+
 	cmd := exec.Command("git", "pull", "origin", g.branch)
 	cmd.Dir = g.repoDir
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to pull from GitHub: %w\nOutput: %s", err, string(output))
@@ -179,11 +195,15 @@ func (g *GitManager) Pull() error {
 	return nil
 }
 
-//  return the current commit hash
+// ============================================================
+// Inspection
+// ============================================================
+
+/* GetCurrentCommit returns the current HEAD commit hash. */
 func (g *GitManager) GetCurrentCommit() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = g.repoDir
-	
+
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current commit: %w", err)

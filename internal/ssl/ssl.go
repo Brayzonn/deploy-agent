@@ -11,10 +11,15 @@ import (
 type SSLManager struct {
 	domain        string
 	domainAliases []string
-	email         string 
+	email         string
 	log           *logger.Logger
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* New creates an SSLManager for the given domain and its aliases. */
 func New(domain string, domainAliases []string, email string, log *logger.Logger) *SSLManager {
 	return &SSLManager{
 		domain:        domain,
@@ -24,6 +29,15 @@ func New(domain string, domainAliases []string, email string, log *logger.Logger
 	}
 }
 
+// ============================================================
+// Certificate management
+// ============================================================
+
+/*
+RequestCertificate runs certbot for the domain and its aliases. A
+Let's Encrypt rate-limit response and an "already valid" response
+are both treated as success rather than failure.
+*/
 func (s *SSLManager) RequestCertificate() error {
 	s.log.Info("Setting up SSL certificate...")
 
@@ -37,7 +51,7 @@ func (s *SSLManager) RequestCertificate() error {
 		"--nginx",
 		"--non-interactive",
 		"--agree-tos",
-		"--keep-until-expiring",  
+		"--keep-until-expiring",
 	}
 
 	if s.email != "" {
@@ -64,11 +78,12 @@ func (s *SSLManager) RequestCertificate() error {
 	} else {
 		s.log.Success("SSL certificate obtained successfully")
 	}
-	
+
 	s.log.Infof("Certificate location: /etc/letsencrypt/live/%s/", s.domain)
 	return nil
 }
 
+/* RenewCertificate runs certbot renew for the domain. */
 func (s *SSLManager) RenewCertificate() error {
 	s.log.Info("Renewing SSL certificate...")
 
@@ -83,6 +98,11 @@ func (s *SSLManager) RenewCertificate() error {
 	return nil
 }
 
+// ============================================================
+// Orchestration
+// ============================================================
+
+/* Setup requests a certificate for the domain. */
 func (s *SSLManager) Setup() error {
 	return s.RequestCertificate()
 }

@@ -15,12 +15,20 @@ type Config struct {
 	BackupDir       string
 	VerboseLogDir   string
 	SlackWebhookURL string
-	SSLEmail        string  
+	SSLEmail        string
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/*
+LoadConfig builds the agent-wide configuration from environment
+variables and fixed filesystem locations.
+*/
 func LoadConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
-	
+
 	return &Config{
 		LogDir:          filepath.Join(homeDir, "logs"),
 		StateDir:        "/var/tmp/deployment-states",
@@ -31,6 +39,15 @@ func LoadConfig() *Config {
 	}
 }
 
+// ============================================================
+// Validation
+// ============================================================
+
+/*
+ValidateEnvironment checks that the webhook-supplied environment
+variables required for a deployment are all present, then resolves
+the matching repo config and assembles the deployment context.
+*/
 func ValidateEnvironment() (*types.DeploymentContext, error) {
 	required := map[string]string{
 		"GITHUB_REPO_NAME":      os.Getenv("GITHUB_REPO_NAME"),
@@ -67,7 +84,11 @@ func ValidateEnvironment() (*types.DeploymentContext, error) {
 	}, nil
 }
 
-// create all required directories
+// ============================================================
+// Setup
+// ============================================================
+
+/* EnsureDirectories creates all directories the agent writes to, if missing. */
 func (c *Config) EnsureDirectories() error {
 	dirs := []string{
 		c.LogDir,

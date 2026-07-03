@@ -18,6 +18,11 @@ type ClientBuilder struct {
 	log     *logger.Logger
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* NewClientBuilder creates a ClientBuilder that builds workDir and deploys to webRoot. */
 func NewClientBuilder(workDir, webRoot string, log *logger.Logger) *ClientBuilder {
 	return &ClientBuilder{
 		builder: New(workDir, log),
@@ -26,7 +31,11 @@ func NewClientBuilder(workDir, webRoot string, log *logger.Logger) *ClientBuilde
 	}
 }
 
-//  build the client application
+// ============================================================
+// Build
+// ============================================================
+
+/* Build installs dependencies, runs the build, and validates the output. */
 func (c *ClientBuilder) Build() (*types.BuildOutput, error) {
 	c.log.Info("Building client application...")
 
@@ -46,23 +55,29 @@ func (c *ClientBuilder) Build() (*types.BuildOutput, error) {
 	return result, nil
 }
 
-//  deploys the built client to the web root and returns backup path
+// ============================================================
+// Deployment
+// ============================================================
+
+/*
+Deploy backs up the current web root, clears it, and copies the new
+build output in. Returns the backup path (or "" if the backup step
+failed) so the caller can restore from it if a later step fails.
+*/
 func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 	c.log.Info("Deploying client to web root...")
 
-	// Validate web root path 
 	if c.webRoot == "" || c.webRoot == "/" || c.webRoot == "/home" {
 		return "", fmt.Errorf("refusing to deploy: webRoot is set to a dangerous value: '%s'", c.webRoot)
 	}
 
-	// Create backup and capture the path
 	timestamp := time.Now().Format("20060102_150405")
-	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s", 
+	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s",
 		filepath.Base(c.webRoot), timestamp)
 
 	if err := c.backupWebRoot(); err != nil {
 		c.log.Warningf("Backup failed: %v", err)
-		backupDir = "" 
+		backupDir = ""
 	}
 
 	c.log.Infof("Clearing web root: %s", c.webRoot)
@@ -76,10 +91,18 @@ func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 	}
 
 	c.log.Success("Client deployed successfully")
-	return backupDir, nil  
+	return backupDir, nil
 }
 
-//  create a backup of the current web root
+// ============================================================
+// Backup
+// ============================================================
+
+/*
+backupWebRoot copies the current web root into a timestamped backup
+directory before it gets overwritten. No-ops if the web root doesn't
+exist yet or is empty.
+*/
 func (c *ClientBuilder) backupWebRoot() error {
 	entries, err := os.ReadDir(c.webRoot)
 	if err != nil {
@@ -90,23 +113,19 @@ func (c *ClientBuilder) backupWebRoot() error {
 	}
 
 	if len(entries) == 0 {
-	
 		return nil
 	}
 
 	c.log.Info("Backing up current deployment...")
 
-	// Create backup directory with timestamp
 	timestamp := time.Now().Format("20060102_150405")
-	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s", 
+	backupDir := fmt.Sprintf("/var/tmp/deployment-backups/%s_%s",
 		filepath.Base(c.webRoot), timestamp)
 
-	// Create backup parent directory
 	if err := os.MkdirAll(filepath.Dir(backupDir), 0700); err != nil {
 		return fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	// Copy web root to backup directory
 	cmd := exec.Command("cp", "-r", c.webRoot, backupDir)
 	if err := cmd.Run(); err != nil {
 		c.log.Warningf("Backup failed: %v", err)
@@ -120,7 +139,7 @@ func (c *ClientBuilder) backupWebRoot() error {
 	return nil
 }
 
-//  removes old backups, keeping only the last 5
+/* cleanupOldBackups removes old backups for this site, keeping only the last 5. */
 func (c *ClientBuilder) cleanupOldBackups() {
 	backupParent := "/var/tmp/deployment-backups"
 	pattern := filepath.Base(c.webRoot) + "_*"
@@ -132,14 +151,17 @@ func (c *ClientBuilder) cleanupOldBackups() {
 
 	sort.Strings(matches)
 
-	// Remove oldest backups, keep last 5
 	for i := 0; i < len(matches)-5; i++ {
 		os.RemoveAll(matches[i])
 		c.log.Infof("Removed old backup: %s", filepath.Base(matches[i]))
 	}
 }
 
-// clearWebRoot removes all files from the web root
+// ============================================================
+// Web root
+// ============================================================
+
+/* clearWebRoot removes all files from the web root, creating it first if needed. */
 func (c *ClientBuilder) clearWebRoot() error {
 	if err := os.MkdirAll(c.webRoot, 0755); err != nil {
 		return fmt.Errorf("failed to create web root: %w", err)
@@ -160,10 +182,10 @@ func (c *ClientBuilder) clearWebRoot() error {
 	return nil
 }
 
-//  copy files from build output to web root
+/* copyToWebRoot copies files from the build output into the web root. */
 func (c *ClientBuilder) copyToWebRoot(buildOutput string) error {
 	cmd := exec.Command("cp", "-r", buildOutput+"/.", c.webRoot+"/")
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("copy failed: %w\nOutput: %s", err, string(output))
@@ -172,7 +194,14 @@ func (c *ClientBuilder) copyToWebRoot(buildOutput string) error {
 	return nil
 }
 
-//  restores the previous deployment from backup
+// ============================================================
+// Restore
+// ============================================================
+
+/*
+RestoreFromBackup clears the (broken) web root and copies a prior
+backup back into place, then restarts nginx to pick up the change.
+*/
 func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	if backupDir == "" {
 		return fmt.Errorf("no backup directory provided")
@@ -191,7 +220,7 @@ func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 
 	c.log.Info("Copying backup files to web root...")
 	cmd := exec.Command("cp", "-r", backupDir+"/.", c.webRoot+"/")
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restore backup: %w\nOutput: %s", err, string(output))
@@ -203,7 +232,15 @@ func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	return nil
 }
 
-//  restart the Nginx server
+// ============================================================
+// Nginx
+// ============================================================
+
+/*
+RestartNginx restarts the Nginx service, trying user-level systemd,
+system-level systemd, then the sysvinit service command in turn
+until one succeeds.
+*/
 func (c *ClientBuilder) RestartNginx() error {
 	c.log.Info("Restarting Nginx...")
 

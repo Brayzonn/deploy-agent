@@ -20,6 +20,11 @@ type ServerBuilder struct {
 	log          *logger.Logger
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* NewServerBuilder creates a ServerBuilder for the given project type and PM2 app. */
 func NewServerBuilder(workDir string, projectType types.ProjectType, appName, serverEntry, pm2Ecosystem string, log *logger.Logger) *ServerBuilder {
 	return &ServerBuilder{
 		builder:      New(workDir, log),
@@ -31,6 +36,15 @@ func NewServerBuilder(workDir string, projectType types.ProjectType, appName, se
 	}
 }
 
+// ============================================================
+// Build
+// ============================================================
+
+/*
+Build installs dependencies then, for TypeScript projects, compiles
+and validates the output has a recognizable entry file. JavaScript
+projects run directly from source and skip the compile step.
+*/
 func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 	s.log.Info("Building server application...")
 
@@ -38,7 +52,6 @@ func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 		return nil, err
 	}
 
-	// For JavaScript projects, no build needed
 	if s.projectType == types.ProjectTypeAPIJS {
 		s.log.Info("JavaScript project - no build step required")
 		return &types.BuildOutput{
@@ -49,14 +62,12 @@ func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 		}, nil
 	}
 
-	// For TypeScript projects, run build
 	if s.projectType == types.ProjectTypeAPITS {
 		result, err := s.builder.RunBuild()
 		if err != nil {
 			return result, err
 		}
 
-	
 		s.log.Info("Waiting for build output to stabilize...")
 		outputDir, err := s.builder.WaitForBuildCompletion(120 * time.Second)
 		if err != nil {
@@ -65,7 +76,6 @@ func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 
 		time.Sleep(3 * time.Second)
 
-		// Validate main entry file exists
 		mainFile := filepath.Join(outputDir, "main.js")
 		if _, err := os.Stat(mainFile); os.IsNotExist(err) {
 			s.log.Warning("main.js not found, checking for alternative entry points...")
@@ -91,7 +101,15 @@ func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 	return nil, fmt.Errorf("unsupported project type: %s", s.projectType)
 }
 
-// Deploy deploys the server using PM2
+// ============================================================
+// Deployment
+// ============================================================
+
+/*
+Deploy starts or restarts the app under PM2, waits for it to settle,
+confirms it reaches the online state, and persists the PM2 process
+list so it survives a server reboot.
+*/
 func (s *ServerBuilder) Deploy(workDir string) error {
 	s.log.Info("Deploying server with PM2...")
 
@@ -101,7 +119,6 @@ func (s *ServerBuilder) Deploy(workDir string) error {
 
 	pm2Manager := pm2.New(s.appName, workDir, s.log)
 
-	// Check if app exists
 	exists, err := pm2Manager.AppExists()
 	if err != nil {
 		return fmt.Errorf("failed to check PM2 app: %w", err)
@@ -119,14 +136,12 @@ func (s *ServerBuilder) Deploy(workDir string) error {
 		}
 	}
 
-	// Wait a bit for PM2 to start
 	time.Sleep(4 * time.Second)
 
 	if err := pm2Manager.EnsureRunning(s.pm2Ecosystem, 5); err != nil {
 		return fmt.Errorf("PM2 app not running: %w", err)
 	}
 
-	// Save PM2 configuration
 	if err := pm2Manager.Save(); err != nil {
 		s.log.Warning("Failed to save PM2 configuration")
 	}

@@ -17,10 +17,17 @@ type DockerBuilder struct {
 	composeFile string
 	envFile     string
 	log         *logger.Logger
-	// service names discovered from the running stack before build
-	prevTagged []string
+	prevTagged  []string
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/*
+NewDockerBuilder creates a DockerBuilder for workDir, defaulting the
+compose and env file names when the caller doesn't override them.
+*/
 func NewDockerBuilder(workDir, composeFile, envFile string, log *logger.Logger) *DockerBuilder {
 	if composeFile == "" {
 		composeFile = "docker-compose.prod.yml"
@@ -37,12 +44,18 @@ func NewDockerBuilder(workDir, composeFile, envFile string, log *logger.Logger) 
 	}
 }
 
-// tagPreviousImages tags each running service image as <image>:previous so we
-// can restore them if the new build fails.
+// ============================================================
+// Image tagging
+// ============================================================
+
+/*
+tagPreviousImages tags each currently running service's image as
+"<project>-<service>:previous" so Rollback() has something to
+restore if the upcoming build or deploy fails.
+*/
 func (d *DockerBuilder) tagPreviousImages() {
 	d.prevTagged = nil
 
-	// Get service names from the compose file
 	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
 	cmd.Dir = d.workDir
 	out, err := cmd.Output()
@@ -51,14 +64,12 @@ func (d *DockerBuilder) tagPreviousImages() {
 		return
 	}
 
-	services := strings.Fields(string(out))
-	for _, svc := range services {
-		// Get the current image ID for this service
+	for svc := range strings.FieldsSeq(string(out)) {
 		psCmd := exec.Command("docker-compose", "-f", d.composeFile, "ps", "-q", svc)
 		psCmd.Dir = d.workDir
 		containerID, err := psCmd.Output()
 		if err != nil || strings.TrimSpace(string(containerID)) == "" {
-			continue // service not running, nothing to tag
+			continue
 		}
 
 		imgCmd := exec.Command("docker", "inspect",
@@ -82,7 +93,7 @@ func (d *DockerBuilder) tagPreviousImages() {
 	}
 }
 
-// cleanPreviousTags removes the :previous tags after a successful deployment.
+/* cleanPreviousTags removes the ":previous" tags after a successful deployment. */
 func (d *DockerBuilder) cleanPreviousTags() {
 	for _, tag := range d.prevTagged {
 		exec.Command("docker", "rmi", tag).Run()
@@ -90,19 +101,22 @@ func (d *DockerBuilder) cleanPreviousTags() {
 	d.prevTagged = nil
 }
 
-// projectName derives a stable prefix from the compose file directory.
+/* projectName derives a stable image-tag prefix from the working directory name. */
 func (d *DockerBuilder) projectName() string {
 	return strings.ToLower(filepath.Base(d.workDir))
 }
 
-func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
-	// Tag currently running images before stopping them
-	d.tagPreviousImages()
+// ============================================================
+// Build
+// ============================================================
 
-	d.log.Info("Stopping any existing containers before build...")
-	stopCmd := exec.Command("docker-compose", "-f", d.composeFile, "down", "--remove-orphans", "--timeout", "30")
-	stopCmd.Dir = d.workDir
-	stopCmd.Run()
+/*
+Build compiles the Docker images for all services defined in the
+compose file. It tags currently-running images as ":previous"
+first so Rollback() has something to restore if the build fails.
+*/
+func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
+	d.tagPreviousImages()
 
 	d.log.Info("Building Docker containers...")
 	startTime := time.Now()
@@ -142,11 +156,19 @@ func (d *DockerBuilder) Build() (*types.BuildOutput, error) {
 	}, nil
 }
 
+// ============================================================
+// Deployment
+// ============================================================
+
+/*
+Deploy brings the compose stack up in detached mode, waits for the
+containers to settle, then verifies they're healthy.
+*/
 func (d *DockerBuilder) Deploy() error {
 	d.log.Info("Deploying Docker containers...")
 
 	d.log.Info("Starting containers...")
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--build")
+	cmd := exec.Command("docker-compose", "-f", d.composeFile, "up", "-d", "--remove-orphans")
 	cmd.Dir = d.workDir
 
 	output, err := cmd.CombinedOutput()
@@ -165,6 +187,15 @@ func (d *DockerBuilder) Deploy() error {
 	return nil
 }
 
+// ============================================================
+// Infrastructure
+// ============================================================
+
+/*
+StartInfra brings up dependency services (e.g. postgres, redis)
+ahead of migrations, so migrations have something to connect to.
+No-ops if no services are configured.
+*/
 func (d *DockerBuilder) StartInfra(services []string) error {
 	if len(services) == 0 {
 		return nil
@@ -186,6 +217,11 @@ func (d *DockerBuilder) StartInfra(services []string) error {
 	return nil
 }
 
+/*
+RunMigrations runs the migration command inside a throwaway "api"
+container against the started infra, defaulting to a Prisma deploy
+command if none is configured.
+*/
 func (d *DockerBuilder) RunMigrations(migrationCmd string) error {
 	if migrationCmd == "" {
 		migrationCmd = "npx prisma migrate deploy"
@@ -210,6 +246,14 @@ func (d *DockerBuilder) RunMigrations(migrationCmd string) error {
 	return nil
 }
 
+// ============================================================
+// Health
+// ============================================================
+
+/*
+CheckHealth inspects `docker-compose ps` output for any container
+that has exited or is stuck restarting.
+*/
 func (d *DockerBuilder) CheckHealth() error {
 	cmd := exec.Command("docker-compose", "-f", d.composeFile, "ps")
 	cmd.Dir = d.workDir
@@ -219,8 +263,7 @@ func (d *DockerBuilder) CheckHealth() error {
 		return fmt.Errorf("failed to check container status: %w", err)
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(string(output), "\n") {
 		if strings.Contains(line, "Exit") || strings.Contains(line, "Restarting") {
 			return fmt.Errorf("some containers are not healthy:\n%s", string(output))
 		}
@@ -230,6 +273,11 @@ func (d *DockerBuilder) CheckHealth() error {
 	return nil
 }
 
+// ============================================================
+// Diagnostics
+// ============================================================
+
+/* GetLogs returns recent logs for a service (or all services if service is ""). */
 func (d *DockerBuilder) GetLogs(service string, tail int) (string, error) {
 	args := []string{"-f", d.composeFile, "logs"}
 	if service != "" {
@@ -250,9 +298,16 @@ func (d *DockerBuilder) GetLogs(service string, tail int) (string, error) {
 	return string(output), nil
 }
 
-// Rollback brings up the previously tagged images. If no previous images were
-// tagged (first deploy), it falls back to docker compose down so the caller
-// knows the stack is stopped rather than in a broken state.
+// ============================================================
+// Rollback
+// ============================================================
+
+/*
+Rollback brings up the previously tagged images. If no previous
+images were tagged (first deploy), it falls back to `docker-compose
+down` so the caller knows the stack is stopped rather than left in
+a broken state.
+*/
 func (d *DockerBuilder) Rollback() error {
 	d.log.Warning("Rolling back Docker deployment...")
 
@@ -267,11 +322,8 @@ func (d *DockerBuilder) Rollback() error {
 		return nil
 	}
 
-	// Restore previous images by re-tagging them back onto the service image names
-	// then bringing the stack back up.
 	d.log.Info("Restoring previous images...")
 
-	// Get the image names the compose file expects for each service
 	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
 	cmd.Dir = d.workDir
 	out, err := cmd.Output()
@@ -279,13 +331,11 @@ func (d *DockerBuilder) Rollback() error {
 		return fmt.Errorf("could not list services during rollback: %w", err)
 	}
 
-	services := strings.Fields(string(out))
-	for _, svc := range services {
+	for svc := range strings.FieldsSeq(string(out)) {
 		prevTag := fmt.Sprintf("%s-%s:previous", d.projectName(), svc)
-		// Get the compose-expected image name for this service
 		imgNameCmd := exec.Command("docker-compose", "-f", d.composeFile, "config")
 		imgNameCmd.Dir = d.workDir
-		// Re-tag previous image as latest for this service
+
 		retagCmd := exec.Command("docker", "tag", prevTag,
 			fmt.Sprintf("%s-%s:latest", d.projectName(), svc))
 		if err := retagCmd.Run(); err != nil {
@@ -304,7 +354,7 @@ func (d *DockerBuilder) Rollback() error {
 	return nil
 }
 
-// CleanupOnSuccess removes the :previous tags after a successful deployment.
+/* CleanupOnSuccess removes the ":previous" tags after a successful deployment. */
 func (d *DockerBuilder) CleanupOnSuccess() {
 	if len(d.prevTagged) > 0 {
 		d.log.Info("Cleaning up previous image tags...")

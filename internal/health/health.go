@@ -18,6 +18,11 @@ type HealthChecker struct {
 	log         *logger.Logger
 }
 
+// ============================================================
+// Construction
+// ============================================================
+
+/* New creates a HealthChecker for the given deployment target. */
 func New(domain string, port int, appName string, projectType types.ProjectType, log *logger.Logger) *HealthChecker {
 	return &HealthChecker{
 		domain:      domain,
@@ -28,6 +33,16 @@ func New(domain string, port int, appName string, projectType types.ProjectType,
 	}
 }
 
+// ============================================================
+// Health checks
+// ============================================================
+
+/*
+CheckHTTP polls the deployed site over HTTP, retrying up to 5 times
+with a 2s delay, until it gets a 200 or exhausts its attempts.
+Client projects are probed at "/"; everything else is probed at the
+hardcoded "/api/v1/health/simple" path.
+*/
 func (h *HealthChecker) CheckHTTP() error {
 	if h.domain == "" {
 		h.log.Warning("No domain configured, skipping HTTP check")
@@ -73,7 +88,10 @@ func (h *HealthChecker) CheckHTTP() error {
 	return fmt.Errorf("HTTP check failed after %d attempts", maxAttempts)
 }
 
-//  check if PM2 app is running
+/*
+CheckPM2 checks whether the PM2 app is online. No-ops for client
+projects and for projects with no configured app name.
+*/
 func (h *HealthChecker) CheckPM2() error {
 	if h.projectType == types.ProjectTypeClient {
 		return nil
@@ -87,7 +105,7 @@ func (h *HealthChecker) CheckPM2() error {
 	h.log.Info("Performing PM2 health check...")
 
 	pm2Mgr := pm2.New(h.appName, "", h.log)
-	
+
 	status, err := pm2Mgr.GetStatus()
 	if err != nil {
 		return fmt.Errorf("PM2 check failed: %w", err)
@@ -101,6 +119,11 @@ func (h *HealthChecker) CheckPM2() error {
 	return nil
 }
 
+/*
+Check runs the health checks appropriate to the project type: none
+for client deployments, HTTP-only for Docker, and PM2 plus HTTP for
+everything else.
+*/
 func (h *HealthChecker) Check() error {
 	switch h.projectType {
 	case types.ProjectTypeClient:
