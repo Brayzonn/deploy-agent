@@ -167,6 +167,8 @@ func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string
 		e.ctx.Config.Port,
 		e.ctx.RepoName,
 		e.ctx.Config.ProjectType,
+		e.ctx.Config.HealthCheckURL,
+		e.ctx.Config.HealthCheckTimeout,
 		e.log,
 	)
 
@@ -302,6 +304,8 @@ func (e *Executor) deployDocker() error {
 			e.ctx.Config.Port,
 			e.ctx.RepoName,
 			e.ctx.Config.ProjectType,
+			e.ctx.Config.HealthCheckURL,
+			e.ctx.Config.HealthCheckTimeout,
 			e.log,
 		)
 
@@ -359,7 +363,7 @@ func (e *Executor) deployClient() error {
 
 	e.log.Infof("Client directory: %s", clientDir)
 
-	clientBuilder := build.NewClientBuilder(clientDir, e.ctx.Config.WebRoot, e.log)
+	clientBuilder := build.NewClientBuilder(clientDir, e.ctx.Config.WebRoot, e.cfg.BackupDir, e.log)
 	buildResult, err := clientBuilder.Build()
 	if err != nil {
 		return fmt.Errorf("client build failed: %w", err)
@@ -471,6 +475,8 @@ func (e *Executor) deployServer() error {
 		e.ctx.Config.Port,
 		e.ctx.RepoName,
 		e.ctx.Config.ProjectType,
+		e.ctx.Config.HealthCheckURL,
+		e.ctx.Config.HealthCheckTimeout,
 		e.log,
 	)
 

@@ -108,16 +108,6 @@ func (l *Logger) State(state types.DeploymentState) {
 	l.Info(fmt.Sprintf("State: %s", state))
 }
 
-/*
-Fatal logs an error message, closes the log file, and terminates the
-process immediately with a non-zero exit code.
-*/
-func (l *Logger) Fatal(message string) {
-	l.Error(message)
-	l.Close()
-	os.Exit(1)
-}
-
 // ============================================================
 // Formatted logging
 // ============================================================
@@ -140,19 +130,4 @@ func (l *Logger) Warningf(format string, args ...interface{}) {
 /* Errorf logs a formatted error message. */
 func (l *Logger) Errorf(format string, args ...interface{}) {
 	l.Error(fmt.Sprintf(format, args...))
-}
-
-// ============================================================
-// Defaults
-// ============================================================
-
-/*
-DefaultLogger creates a console-only logger, for use before a
-deployment context (and therefore a log file path) exists.
-*/
-func DefaultLogger() *Logger {
-	return &Logger{
-		deploymentID: "default",
-		logFile:      nil,
-	}
 }

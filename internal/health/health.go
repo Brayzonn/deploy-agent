@@ -15,6 +15,8 @@ type HealthChecker struct {
 	port        int
 	appName     string
 	projectType types.ProjectType
+	healthURL   string
+	timeout     time.Duration
 	log         *logger.Logger
 }
 
@@ -22,13 +24,24 @@ type HealthChecker struct {
 // Construction
 // ============================================================
 
-/* New creates a HealthChecker for the given deployment target. */
-func New(domain string, port int, appName string, projectType types.ProjectType, log *logger.Logger) *HealthChecker {
+/*
+New creates a HealthChecker for the given deployment target. When
+healthURL is set it is probed verbatim; otherwise a URL is derived
+from the domain. timeoutSeconds bounds the whole HTTP check,
+defaulting to 30 when unset.
+*/
+func New(domain string, port int, appName string, projectType types.ProjectType, healthURL string, timeoutSeconds int, log *logger.Logger) *HealthChecker {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+
 	return &HealthChecker{
 		domain:      domain,
 		port:        port,
 		appName:     appName,
 		projectType: projectType,
+		healthURL:   healthURL,
+		timeout:     time.Duration(timeoutSeconds) * time.Second,
 		log:         log,
 	}
 }
@@ -38,54 +51,53 @@ func New(domain string, port int, appName string, projectType types.ProjectType,
 // ============================================================
 
 /*
-CheckHTTP polls the deployed site over HTTP, retrying up to 5 times
-with a 2s delay, until it gets a 200 or exhausts its attempts.
-Client projects are probed at "/"; everything else is probed at the
-hardcoded "/api/v1/health/simple" path.
+CheckHTTP polls the health URL until it returns 200 or the
+configured timeout passes. The configured HealthCheckURL is used
+verbatim when set; otherwise client projects are probed at "/" and
+everything else at "/api/v1/health/simple" on the domain. Each
+request has its own 10s limit so a hung server can't stall the
+check forever.
 */
 func (h *HealthChecker) CheckHTTP() error {
-	if h.domain == "" {
-		h.log.Warning("No domain configured, skipping HTTP check")
-		return nil
-	}
-
-	h.log.Info("Performing HTTP health check...")
-
-	var url string
-	if h.projectType == types.ProjectTypeClient {
-		url = fmt.Sprintf("http://%s/", h.domain)
-	} else {
-		url = fmt.Sprintf("http://%s/api/v1/health/simple", h.domain)
-	}
-
-	maxAttempts := 5
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resp, err := http.Get(url)
-		if err != nil {
-			if attempt < maxAttempts {
-				h.log.Infof("HTTP check attempt %d/%d failed, retrying in 2s...", attempt, maxAttempts)
-				time.Sleep(2 * time.Second)
-				continue
-			}
-			return fmt.Errorf("HTTP check failed after %d attempts: %w", maxAttempts, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == http.StatusOK {
-			h.log.Successf("HTTP health check passed (Status: %d)", resp.StatusCode)
+	url := h.healthURL
+	if url == "" {
+		if h.domain == "" {
+			h.log.Warning("No health check URL or domain configured, skipping HTTP check")
 			return nil
 		}
-
-		if attempt < maxAttempts {
-			h.log.Infof("HTTP returned %d, retrying in 2s...", resp.StatusCode)
-			time.Sleep(2 * time.Second)
-			continue
+		if h.projectType == types.ProjectTypeClient {
+			url = fmt.Sprintf("http://%s/", h.domain)
+		} else {
+			url = fmt.Sprintf("http://%s/api/v1/health/simple", h.domain)
 		}
-
-		return fmt.Errorf("HTTP check failed: expected 200, got %d", resp.StatusCode)
 	}
 
-	return fmt.Errorf("HTTP check failed after %d attempts", maxAttempts)
+	h.log.Infof("Performing HTTP health check against %s (timeout %s)...", url, h.timeout)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	deadline := time.Now().Add(h.timeout)
+
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				h.log.Successf("HTTP health check passed (Status: %d)", resp.StatusCode)
+				return nil
+			}
+			lastErr = fmt.Errorf("expected 200, got %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("HTTP check failed after %s: %w", h.timeout, lastErr)
+		}
+
+		h.log.Infof("HTTP check attempt %d failed (%v), retrying in 2s...", attempt, lastErr)
+		time.Sleep(2 * time.Second)
+	}
 }
 
 /*

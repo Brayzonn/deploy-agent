@@ -73,11 +73,3 @@ type BuildOutput struct {
 	Duration  time.Duration
 	Error     error
 }
-
-type DockerDeploymentResult struct {
-	ContainersStarted []string
-	ContainersFailed  []string
-	MigrationsRun     bool
-	HealthCheckPassed bool
-	Logs              string
-}

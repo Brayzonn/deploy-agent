@@ -26,12 +26,20 @@ type ClientBuilder struct {
 // Construction
 // ============================================================
 
-/* NewClientBuilder creates a ClientBuilder that builds workDir and deploys to webRoot. */
-func NewClientBuilder(workDir, webRoot string, log *logger.Logger) *ClientBuilder {
+/*
+NewClientBuilder creates a ClientBuilder that builds workDir and
+deploys to webRoot, keeping pre-deploy backups under backupDir
+(falling back to the default location when empty).
+*/
+func NewClientBuilder(workDir, webRoot, backupDir string, log *logger.Logger) *ClientBuilder {
+	if backupDir == "" {
+		backupDir = defaultBackupParent
+	}
+
 	return &ClientBuilder{
 		builder:      New(workDir, log),
 		webRoot:      webRoot,
-		backupParent: defaultBackupParent,
+		backupParent: backupDir,
 		log:          log,
 	}
 }

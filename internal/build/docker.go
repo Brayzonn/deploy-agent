@@ -204,8 +204,6 @@ func (d *DockerBuilder) Deploy() error {
 	}
 
 	d.log.Info("Waiting for containers to be healthy...")
-	time.Sleep(10 * time.Second)
-
 	if err := d.CheckHealth(); err != nil {
 		return fmt.Errorf("health check failed: %w", err)
 	}
@@ -240,8 +238,7 @@ func (d *DockerBuilder) StartInfra(services []string) error {
 	}
 
 	d.log.Info("Waiting for infra services to be ready...")
-	time.Sleep(5 * time.Second)
-	return nil
+	return d.waitForServices(services, 60*time.Second)
 }
 
 /*
@@ -278,26 +275,94 @@ func (d *DockerBuilder) RunMigrations(migrationCmd string) error {
 // ============================================================
 
 /*
-CheckHealth inspects `docker-compose ps` output for any container
-that has exited or is stuck restarting.
+CheckHealth waits until every compose service's containers are
+running — and "healthy" where the container defines a healthcheck —
+polling actual container state instead of substring-matching ps
+output.
 */
 func (d *DockerBuilder) CheckHealth() error {
-	cmd := exec.Command("docker-compose", "-f", d.composeFile, "ps")
+	cmd := exec.Command("docker-compose", "-f", d.composeFile, "config", "--services")
 	cmd.Dir = d.workDir
-
-	output, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("failed to check container status: %w", err)
+		return fmt.Errorf("failed to list compose services: %w", err)
 	}
 
-	for line := range strings.SplitSeq(string(output), "\n") {
-		if strings.Contains(line, "Exit") || strings.Contains(line, "Restarting") {
-			return fmt.Errorf("some containers are not healthy:\n%s", string(output))
+	return d.waitForServices(strings.Fields(string(out)), 60*time.Second)
+}
+
+/*
+waitForServices polls the given services until each has a running
+container ("healthy" when a healthcheck is defined) or the deadline
+passes. Exited, dead, or unhealthy containers fail immediately —
+waiting won't fix them.
+*/
+func (d *DockerBuilder) waitForServices(services []string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		pending, failed := d.serviceStates(services)
+
+		if len(failed) > 0 {
+			return fmt.Errorf("containers are not healthy: %s", strings.Join(failed, ", "))
+		}
+		if len(pending) == 0 {
+			d.log.Success("All containers are running")
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("containers not ready after %s: %s", timeout, strings.Join(pending, ", "))
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+}
+
+/*
+serviceStates inspects each service's containers and buckets the
+service as pending (starting up) or failed (exited, dead, or
+unhealthy). A service absent from both is ready.
+*/
+func (d *DockerBuilder) serviceStates(services []string) (pending, failed []string) {
+	for _, svc := range services {
+		psCmd := exec.Command("docker-compose", "-f", d.composeFile, "ps", "-q", svc)
+		psCmd.Dir = d.workDir
+		out, err := psCmd.Output()
+		if err != nil || strings.TrimSpace(string(out)) == "" {
+			pending = append(pending, fmt.Sprintf("%s (no container)", svc))
+			continue
+		}
+
+		for containerID := range strings.FieldsSeq(string(out)) {
+			inspectCmd := exec.Command("docker", "inspect",
+				"--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+				containerID,
+			)
+			info, err := inspectCmd.Output()
+			if err != nil {
+				pending = append(pending, fmt.Sprintf("%s (could not inspect)", svc))
+				continue
+			}
+
+			status, healthStatus, _ := strings.Cut(strings.TrimSpace(string(info)), "|")
+			switch {
+			case status == "exited" || status == "dead" || healthStatus == "unhealthy":
+				failed = append(failed, fmt.Sprintf("%s (%s%s)", svc, status, healthSuffix(healthStatus)))
+			case status != "running" || healthStatus == "starting":
+				pending = append(pending, fmt.Sprintf("%s (%s%s)", svc, status, healthSuffix(healthStatus)))
+			}
 		}
 	}
 
-	d.log.Success("All containers are running")
-	return nil
+	return pending, failed
+}
+
+/* healthSuffix formats a container's health status for state messages, if it has one. */
+func healthSuffix(healthStatus string) string {
+	if healthStatus == "" {
+		return ""
+	}
+	return ", health: " + healthStatus
 }
 
 // ============================================================
