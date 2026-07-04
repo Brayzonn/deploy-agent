@@ -26,8 +26,7 @@ const (
 
 /*
 GetRepoConfig resolves the deployment config for a repo from the
-repos file (or the built-in defaults when no file is installed).
-Unknown repos are an error — deploys are allowlist-only.
+repos file. Unknown repos are an error — deploys are allowlist-only.
 */
 func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 	configs, err := loadRepoConfigs()
@@ -54,22 +53,21 @@ func GetRepoConfig(repoName, repoOwner string) (*types.RepoConfig, error) {
 /*
 loadRepoConfigs reads the repos file — a JSON object keyed by repo
 name — rejecting unknown fields so a typo'd or removed key fails
-loudly instead of silently doing nothing. When the env var is unset
-and no file exists at the default path, the compiled-in defaults
-are used so the agent keeps working before a file is installed. An
-explicitly configured path that can't be read is always an error.
+loudly instead of silently doing nothing. The file is the only
+source of repo configs: a missing file fails the deploy with
+install instructions rather than falling back to anything baked
+into the binary.
 */
 func loadRepoConfigs() (map[string]*types.RepoConfig, error) {
 	path := os.Getenv(reposFileEnvVar)
-	explicit := path != ""
-	if !explicit {
+	if path == "" {
 		path = defaultReposFile
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) && !explicit {
-			return builtinRepoConfigs(), nil
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("repos file %s does not exist — install one (see repos.example.json in the deploy-agent repo)", path)
 		}
 		return nil, fmt.Errorf("failed to read repos file %s: %w", path, err)
 	}
@@ -132,116 +130,4 @@ func validateRepoConfig(repoName string, config *types.RepoConfig) error {
 	}
 
 	return nil
-}
-
-// ============================================================
-// Built-in defaults
-// ============================================================
-
-/*
-builtinRepoConfigs returns the compiled-in repo configs, used only
-when no repos file is installed. New projects should go in the
-repos file, not here.
-*/
-func builtinRepoConfigs() map[string]*types.RepoConfig {
-	return map[string]*types.RepoConfig{
-		"zoneyhub": {
-			Name:        "zoneyhub",
-			RepoDir:     fmt.Sprintf("/home/zoney/%s", "zoneyhub"),
-			WebRoot:     fmt.Sprintf("/var/www/html/%s", "zoneyhub"),
-			ProjectType: types.ProjectTypeClient,
-			FullStack:   false,
-			ClientDir:   "client",
-			ServerDir:   "server",
-			ServerEntry: "app.js",
-		},
-		"my-music-stats": {
-			Name:         "my-music-stats",
-			RepoDir:      fmt.Sprintf("/home/zoney/%s", "my-music-stats"),
-			WebRoot:      "/var/www/html/weeklies",
-			ProjectType:  types.ProjectTypeAPITS,
-			FullStack:    true,
-			ClientDir:    "client",
-			ServerDir:    "server",
-			ServerEntry:  "src/main.js",
-			PM2Ecosystem: "ecosystem.config.js",
-		},
-		"URL-Shortener-App": {
-			Name:        "URL-Shortener-App",
-			RepoDir:     fmt.Sprintf("/home/zoney/%s", "URL-Shortener-App"),
-			WebRoot:     fmt.Sprintf("/var/www/html/%s", "URL-Shortener-App"),
-			ProjectType: types.ProjectTypeAPIJS,
-			FullStack:   false,
-			ClientDir:   "client",
-			ServerDir:   "server",
-			ServerEntry: "app.js",
-		},
-		"MINES": {
-			Name:                "MINES",
-			RepoDir:             fmt.Sprintf("/home/zoney/%s", "MINES"),
-			ProjectType:         types.ProjectTypeDocker,
-			UseDocker:           true,
-			DockerComposeFile:   "docker-compose.prod.yml",
-			DockerEnvFile:       ".env.production",
-			ServerDir:           "server",
-			RequiresMigrations:  true,
-			MigrationCommand:    "npm run db:migrate",
-			MigrationService:    "api",
-			InfraServices:       []string{"postgres", "redis"},
-			Domain:              "api.mines.zoneyhub.com",
-			Port:                4600,
-			HealthCheckURL:      "http://localhost:4600/api/v1/health",
-			HealthCheckTimeout:  30,
-			ClientDir:           "client",
-			ClientDomain:        "mines.zoneyhub.com",
-			ClientDomainAliases: []string{},
-			ClientWebRoot:       "/var/www/html/MINES",
-		},
-		"notifykit": {
-			Name:               "notifykit",
-			RepoDir:            fmt.Sprintf("/home/zoney/%s", "notifykit"),
-			ProjectType:        types.ProjectTypeDocker,
-			UseDocker:          true,
-			DockerComposeFile:  "docker-compose.prod.yml",
-			DockerEnvFile:      ".env.production",
-			RequiresMigrations: true,
-			MigrationCommand:   "npx prisma migrate deploy",
-			MigrationService:   "api",
-			InfraServices:      []string{"postgres", "redis"},
-			Domain:             "api.notifykit.dev",
-			Port:               5932,
-			HealthCheckURL:     "http://localhost:5932/api/v1/health",
-			HealthCheckTimeout: 30,
-		},
-		"notifykit-web": {
-			Name:          "notifykit-web",
-			RepoDir:       fmt.Sprintf("/home/zoney/%s", "notifykit-web"),
-			WebRoot:       fmt.Sprintf("/var/www/html/%s", "notifykit-web"),
-			ProjectType:   types.ProjectTypeClient,
-			FullStack:     false,
-			ClientDir:     "client",
-			Domain:        "notifykit.dev",
-			DomainAliases: []string{"www.notifykit.dev"},
-		},
-		"notifykit-admin": {
-			Name:          "notifykit-admin",
-			RepoDir:       fmt.Sprintf("/home/zoney/%s", "notifykit-admin"),
-			WebRoot:       fmt.Sprintf("/var/www/html/%s", "notifykit-admin"),
-			ProjectType:   types.ProjectTypeClient,
-			FullStack:     false,
-			ClientDir:     ".",
-			Domain:        "admin.notifykit.dev",
-			DomainAliases: []string{},
-		},
-		"NotifyKit-Docs": {
-			Name:          "NotifyKit-Docs",
-			RepoDir:       fmt.Sprintf("/home/zoney/%s", "NotifyKit-Docs"),
-			WebRoot:       "/var/www/html/NotifyKit-Docs",
-			ProjectType:   types.ProjectTypeClient,
-			FullStack:     false,
-			ClientDir:     ".",
-			Domain:        "docs.notifykit.dev",
-			DomainAliases: []string{},
-		},
-	}
 }

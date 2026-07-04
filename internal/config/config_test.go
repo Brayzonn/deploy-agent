@@ -67,6 +67,8 @@ func TestValidateWebhookValues(t *testing.T) {
 
 /* TestGetRepoConfigAllowlist checks unknown repos are rejected and known ones get a deploy branch. */
 func TestGetRepoConfigAllowlist(t *testing.T) {
+	writeReposFile(t, `{"notifykit": {"repo_dir": "/home/zoney/notifykit", "project_type": "DOCKER"}}`)
+
 	if _, err := GetRepoConfig("not-a-real-repo", "Brayzonn"); err == nil {
 		t.Error("unknown repo was accepted, want allowlist rejection")
 	}

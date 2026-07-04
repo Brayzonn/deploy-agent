@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,7 +53,7 @@ func TestGetRepoConfigFromFile(t *testing.T) {
 	}
 
 	if _, err := GetRepoConfig("notifykit", "Brayzonn"); err == nil {
-		t.Error("repo absent from the file was accepted — built-in defaults must not leak through when a file is installed")
+		t.Error("repo absent from the file was accepted, want allowlist rejection")
 	}
 }
 
@@ -84,11 +85,15 @@ func TestReposFileRejectsBadConfigs(t *testing.T) {
 	}
 }
 
-/* TestReposFileExplicitPathMissing checks a configured-but-absent file is an error, not a silent fallback. */
-func TestReposFileExplicitPathMissing(t *testing.T) {
+/* TestReposFileMissing checks a missing repos file is a clear error — there is no built-in fallback. */
+func TestReposFileMissing(t *testing.T) {
 	t.Setenv(reposFileEnvVar, filepath.Join(t.TempDir(), "does-not-exist.json"))
 
-	if _, err := GetRepoConfig("notifykit", "Brayzonn"); err == nil {
-		t.Error("missing explicit repos file fell back to built-in defaults, want error")
+	_, err := GetRepoConfig("notifykit", "Brayzonn")
+	if err == nil {
+		t.Fatal("missing repos file was accepted, want error")
+	}
+	if !strings.Contains(err.Error(), "repos.example.json") {
+		t.Errorf("missing-file error should point at the install instructions, got: %v", err)
 	}
 }
