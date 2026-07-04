@@ -12,7 +12,10 @@ Go-based deployment automation tool for zero-config deployments via GitHub webho
 - Auto-restart services (nginx, PM2, Docker containers)
 - Database migrations for Docker deployments
 - Health checks with automatic rollback on failure
-- Automatic backups (keeps last 5 for PM2 deployments)
+- Automatic backups before static-site deploys (keeps last 5 per site)
+- Per-repo deploy locking — concurrent pushes queue instead of interleaving
+- Branch filtering — only pushes to the configured deploy branch are deployed
+- Slack notifications on failed deployments
 
 ### Deployment Support
 
@@ -25,9 +28,11 @@ Go-based deployment automation tool for zero-config deployments via GitHub webho
 
 ### Developer Experience
 
+- Repo configuration in a JSON file — add or change projects without recompiling
 - Structured logging (console + file)
-- Git operations (fetch, pull, stash, restore)
-- Build validation with timeout handling
+- Deterministic git sync — deploys exactly the commit the webhook announced
+- Hard timeouts on every command (git, npm, docker, pm2, certbot)
+- Build validation — stale output is cleaned so empty builds fail loudly
 - Rollback on failed health checks
 - Color-coded console output
 - Detailed deployment logs per run
@@ -44,25 +49,24 @@ GitHub Push → Webhook Server → Deploy Agent → Your Site is Live
 
 **Traditional Deployment (PM2):**
 
-1. Auto-clone repository
+1. Auto-clone repository / sync to the pushed commit
 2. Install dependencies & build
 3. Generate nginx config
 4. Request SSL certificate
 5. Deploy files / Restart PM2
-6. Run health checks
+6. Run health checks (rollback to previous commit on failure)
 7. Site live with HTTPS
 
 **Docker Deployment:**
 
-1. Auto-clone repository
-2. Build Docker images
-3. Stop old containers
-4. Start new containers
-5. Run database migrations
-6. Generate nginx config (first time only)
-7. Request SSL certificate (first time only)
-8. Health checks
-9. Site live with HTTPS
+1. Auto-clone repository / sync to the pushed commit
+2. Build Docker images (old containers keep serving during the build)
+3. Start infra services & run database migrations (if configured)
+4. Swap to new containers
+5. Generate nginx config (first time only)
+6. Request SSL certificate (first time only)
+7. Health checks (rollback to previous images on failure)
+8. Site live with HTTPS
 
 ---
 
@@ -198,55 +202,62 @@ DEPLOYMENT_SCRIPT=/home/youruser/scripts/deploy-agent
 SSL_EMAIL=your-email@example.com  # For Let's Encrypt notifications
 ```
 
-### 3. Add Your Repository
+### 3. Add Your Repositories
 
-Edit `internal/config/repos.go` and add your repository configuration:
+Repo configs live in a JSON file on the server: `/etc/deploy-agent/repos.json` (override the path with the `DEPLOY_AGENT_REPOS_FILE` env var). **This file is required** — without it every deploy fails with an error telling you to install it. Start from the example in this repo:
+
+```bash
+sudo mkdir -p /etc/deploy-agent
+sudo cp repos.example.json /etc/deploy-agent/repos.json
+sudo nano /etc/deploy-agent/repos.json
+```
+
+Adding or changing a project is just editing this file — no recompiling, no redeploying the binary. Unknown/typo'd field names are rejected at load time, and paths are validated (repo dirs must be absolute, web roots must live under `/var/www/html/`). Only repos in this file can deploy — anything else is rejected.
 
 **Frontend (Static Site):**
 
-```go
+```json
 "your-frontend": {
-    Name:          "your-frontend",
-    RepoDir:       "/home/youruser/your-frontend",
-    WebRoot:       "/var/www/html/your-frontend",
-    ProjectType:   types.ProjectTypeClient,
-    Domain:        "yourdomain.com",
-    DomainAliases: []string{"www.yourdomain.com"},
-},
+  "repo_dir": "/home/youruser/your-frontend",
+  "web_root": "/var/www/html/your-frontend",
+  "project_type": "CLIENT",
+  "domain": "yourdomain.com",
+  "domain_aliases": ["www.yourdomain.com"]
+}
 ```
 
 **Backend (PM2):**
 
-```go
+```json
 "your-api": {
-    Name:          "your-api",
-    RepoDir:       "/home/youruser/your-api",
-    ProjectType:   types.ProjectTypeAPITS,
-    ServerDir:     ".",
-    ServerEntry:   "dist/main.js",
-    PM2Ecosystem:  "ecosystem.config.js",
-    Domain:        "api.yourdomain.com",
-    Port:          3000,
-},
+  "repo_dir": "/home/youruser/your-api",
+  "project_type": "API_TS",
+  "server_dir": ".",
+  "server_entry": "dist/main.js",
+  "pm2_ecosystem": "ecosystem.config.js",
+  "domain": "api.yourdomain.com",
+  "port": 3000
+}
 ```
 
 **Docker Application:**
 
-```go
+```json
 "your-docker-app": {
-    Name:               "your-docker-app",
-    RepoDir:            "/home/youruser/your-docker-app",
-    ProjectType:        types.ProjectTypeDocker,
-    UseDocker:          true,
-    DockerComposeFile:  "docker-compose.prod.yml",
-    DockerEnvFile:      ".env.production",
-    RequiresMigrations: true,
-    MigrationCommand:   "npx prisma migrate deploy",
-    Domain:             "api.yourdomain.com",
-    Port:               5932,
-    HealthCheckURL:     "http://localhost:5932/api/v1/health",
-    HealthCheckTimeout: 30,
-},
+  "repo_dir": "/home/youruser/your-docker-app",
+  "project_type": "DOCKER",
+  "use_docker": true,
+  "docker_compose_file": "docker-compose.prod.yml",
+  "docker_env_file": ".env.production",
+  "requires_migrations": true,
+  "migration_command": "npx prisma migrate deploy",
+  "migration_service": "api",
+  "infra_services": ["postgres", "redis"],
+  "domain": "api.yourdomain.com",
+  "port": 5932,
+  "health_check_url": "http://localhost:5932/api/v1/health",
+  "health_check_timeout": 30
+}
 ```
 
 ### 4. Setup GitHub Webhook
@@ -281,25 +292,14 @@ tail -f ~/logs/deployments/deployment_*.log
 
 ---
 
-**Note:** You only need to rebuild the deploy agent if you modify the Go code (e.g., adding/changing repository configurations in `internal/config/repos.go`).
-
-If you add a new repository:
+**Note:** You only need to rebuild the deploy agent when the Go code itself changes. Adding or changing repositories does **not** require a rebuild:
 
 ```bash
-# Edit config
-vim internal/config/repos.go
-
-# Rebuild
-GOOS=linux GOARCH=amd64 go build -o deploy-agent
-
-# Upload to server
-scp deploy-agent user@your-server:/tmp/
-ssh user@your-server
-sudo mv /tmp/deploy-agent /home/youruser/scripts/deploy-agent
-
-# Restart webhook server
-pm2 restart git-hook
+# On the server — edit config, done
+sudo nano /etc/deploy-agent/repos.json
 ```
+
+The next deploy picks the change up automatically.
 
 ---
 
@@ -307,36 +307,45 @@ pm2 restart git-hook
 
 ### Repository Configuration Fields
 
-| Field                | Type     | Description                         | Required              |
-| -------------------- | -------- | ----------------------------------- | --------------------- |
-| `Name`               | string   | Repository name                     | Yes                   |
-| `RepoDir`            | string   | Local path where repo is cloned     | Yes                   |
-| `ProjectType`        | string   | Type of project (see Project Types) | Yes                   |
-| `UseDocker`          | bool     | Enable Docker deployment            | For Docker            |
-| `DockerComposeFile`  | string   | Docker Compose file name            | For Docker            |
-| `DockerEnvFile`      | string   | Environment file for Docker         | For Docker            |
-| `RequiresMigrations` | bool     | Run migrations after Docker deploy  | Optional              |
-| `MigrationCommand`   | string   | Command to run migrations           | If RequiresMigrations |
-| `WebRoot`            | string   | Path to serve static files          | For static sites      |
-| `ServerDir`          | string   | Directory containing server code    | For PM2 backends      |
-| `ServerEntry`        | string   | Entry point file for PM2            | For PM2 backends      |
-| `PM2Ecosystem`       | string   | PM2 ecosystem config file           | For PM2 backends      |
-| `Domain`             | string   | Primary domain name                 | Optional              |
-| `DomainAliases`      | []string | Additional domains                  | Optional              |
-| `Port`               | int      | Port where app runs                 | For backends          |
-| `HealthCheckURL`     | string   | URL to check after deployment       | Optional              |
-| `HealthCheckTimeout` | int      | Health check timeout in seconds     | Optional              |
-| `FullStack`          | bool     | Deploy both frontend and backend    | Optional              |
-| `ClientDir`          | string   | Frontend directory in fullstack     | For fullstack         |
+Fields are snake_case JSON keys in `/etc/deploy-agent/repos.json`; each repo is keyed by its GitHub repository name.
+
+| Field                   | Type     | Description                                              | Required              |
+| ----------------------- | -------- | -------------------------------------------------------- | --------------------- |
+| `name`                  | string   | Repository name (defaults to the JSON key)               | Optional              |
+| `deploy_branch`         | string   | Only pushes to this branch deploy (default `main`)       | Optional              |
+| `repo_dir`              | string   | Local path where repo is cloned (must be absolute)       | Yes                   |
+| `project_type`          | string   | `CLIENT`, `API_JS`, `API_TS`, or `DOCKER`                | Yes                   |
+| `use_docker`            | bool     | Enable Docker deployment                                 | For Docker            |
+| `docker_compose_file`   | string   | Docker Compose file name                                 | For Docker            |
+| `docker_env_file`       | string   | Environment file for Docker (default `.env.production`)  | Optional              |
+| `requires_migrations`   | bool     | Run migrations before swapping containers                | Optional              |
+| `migration_command`     | string   | Command to run migrations                                | If migrations enabled |
+| `migration_service`     | string   | Compose service to run migrations in (default `api`)     | Optional              |
+| `infra_services`        | []string | Compose services started before migrations               | If migrations enabled |
+| `web_root`              | string   | Path to serve static files (under `/var/www/html/`)      | For static sites      |
+| `server_dir`            | string   | Directory containing server code                         | For PM2 backends      |
+| `server_entry`          | string   | Entry point file for PM2 (fallback when no ecosystem)    | For PM2 backends      |
+| `pm2_ecosystem`         | string   | PM2 ecosystem config file                                | Optional              |
+| `domain`                | string   | Primary domain name                                      | Optional              |
+| `domain_aliases`        | []string | Additional domains                                       | Optional              |
+| `server_domain`         | string   | Fullstack API domain (default `api.` + `domain`)         | Optional              |
+| `port`                  | int      | Port where app runs                                      | For backends          |
+| `health_check_url`      | string   | URL polled after deployment until it returns 200         | Optional              |
+| `health_check_timeout`  | int      | Health check deadline in seconds (default 30)            | Optional              |
+| `full_stack`            | bool     | Deploy both frontend and backend                         | Optional              |
+| `client_dir`            | string   | Frontend directory in fullstack/hybrid repos             | For fullstack         |
+| `client_domain`         | string   | Frontend domain for Docker + client hybrid repos         | For hybrid            |
+| `client_domain_aliases` | []string | Frontend domain aliases for hybrid repos                 | Optional              |
+| `client_web_root`       | string   | Frontend web root for hybrid repos                       | For hybrid            |
 
 ### Project Types
 
-| Type                | Description              | Build           | Deployment       | Nginx Config  |
-| ------------------- | ------------------------ | --------------- | ---------------- | ------------- |
-| `ProjectTypeClient` | React, Vue, Vite         | `npm run build` | Copy to web root | Static files  |
-| `ProjectTypeAPIJS`  | Node.js backend          | None            | PM2 restart      | Reverse proxy |
-| `ProjectTypeAPITS`  | NestJS, TypeScript       | `npm run build` | PM2 restart      | Reverse proxy |
-| `ProjectTypeDocker` | Docker containerized app | Docker build    | Docker Compose   | Reverse proxy |
+| Type     | Description              | Build           | Deployment            | Nginx Config  |
+| -------- | ------------------------ | --------------- | --------------------- | ------------- |
+| `CLIENT` | React, Vue, Vite         | `npm run build` | Atomic web-root swap  | Static files  |
+| `API_JS` | Node.js backend          | None            | PM2 restart           | Reverse proxy |
+| `API_TS` | NestJS, TypeScript       | `npm run build` | PM2 restart           | Reverse proxy |
+| `DOCKER` | Docker containerized app | Docker build    | Docker Compose        | Reverse proxy |
 
 ### Docker Configuration
 
@@ -438,21 +447,23 @@ JWT_SECRET=your-secret
 
 ## Environment Variables
 
-Set by webhook server (automatically):
+Set by webhook server (automatically). All values are validated at startup — the commit must be a full 40-character hash, and names may not contain path separators or traversal:
 
 ```bash
 GITHUB_REPO_NAME=your-repo
 GITHUB_BRANCH=main
 GITHUB_REPO_OWNER=username
 GITHUB_PUSHER=username
-GITHUB_COMMIT=abc123def456
+GITHUB_COMMIT=<full 40-char commit hash>
 GITHUB_REPO_FULL_NAME=username/your-repo
 ```
 
 Optional (set in webhook server .env):
 
 ```bash
-SSL_EMAIL=your-email@example.com
+SSL_EMAIL=your-email@example.com            # Let's Encrypt notifications
+SLACK_WEBHOOK_URL=https://hooks.slack.com/… # failure alerts (off when unset)
+DEPLOY_AGENT_REPOS_FILE=/path/to/repos.json # overrides /etc/deploy-agent/repos.json
 ```
 
 ---
@@ -463,29 +474,28 @@ SSL_EMAIL=your-email@example.com
 deploy-agent/
 ├── internal/
 │   ├── build/        # Build orchestration
-│   │   ├── client.go    # Frontend builds
+│   │   ├── builder.go   # npm install/build
+│   │   ├── client.go    # Frontend builds + atomic web-root swap
 │   │   ├── server.go    # Backend builds
-│   │   └── docker.go    # Docker builds
-│   ├── config/       # Repository configurations
-│   │   ├── config.go    # Main config
-│   │   └── repos.go     # Repository definitions
+│   │   └── docker.go    # Docker builds, rollback, compose v1/v2 detection
+│   ├── config/       # Configuration
+│   │   ├── config.go    # Agent config + webhook input validation
+│   │   └── repos.go     # Repos-file loading and validation
 │   ├── deploy/       # Deployment executor
-│   │   └── executor.go  # Main deployment logic
+│   │   └── executor.go  # Orchestration, routing, rollback
 │   ├── git/          # Git operations
-│   │   └── git.go       # Clone, pull, stash operations
+│   │   └── git.go       # Clone, sync-to-commit, rollback reset
 │   ├── health/       # Health checks
-│   │   └── health.go    # HTTP and PM2 health checks
-│   ├── logger/       # Logging system
-│   │   └── logger.go    # Colored console and file logging
-│   ├── nginx/        # Nginx configuration
-│   │   ├── nginx.go     # Config generation and management
-│   │   └── templates.go # Config templates
+│   │   └── health.go    # HTTP polling and container-state checks
+│   ├── lock/         # Per-repo deploy locking (flock)
+│   ├── logger/       # Colored console and file logging
+│   ├── nginx/        # Nginx config generation and management
+│   ├── notify/       # Slack failure notifications
 │   ├── pm2/          # PM2 process management
-│   │   └── pm2.go       # PM2 operations
-│   └── ssl/          # SSL certificate automation
-│       └── ssl.go       # Certbot integration
+│   ├── run/          # Command execution with hard timeouts
+│   └── ssl/          # Certbot integration
 ├── pkg/types/        # Shared type definitions
-│   └── types.go         # Common types and enums
+├── repos.example.json # Template for /etc/deploy-agent/repos.json
 ├── main.go           # Entry point
 ├── go.mod            # Go dependencies
 └── README.md         # This file
@@ -541,49 +551,47 @@ alias deploy-history='ls -lt ~/logs/deployments/ | head -20'
 
 ## Deployment Workflows
 
+Every deployment starts the same way: the branch is checked against `deploy_branch` (other branches are ignored), a per-repo lock is taken (concurrent pushes queue), and the checkout is force-synced to exactly the pushed commit.
+
 ### Traditional PM2 Deployment
 
 ```
-1. Webhook triggered
-2. Git pull latest code
-3. npm install (if package.json changed)
-4. npm run build (for TypeScript)
-5. PM2 restart application
-6. Generate/update nginx config (first deployment)
-7. Request/renew SSL certificate (first deployment)
-8. Health check
-9. Rollback if health check fails
+1. Webhook triggered → branch check, lock, sync to commit
+2. npm install (npm ci when a lock file exists)
+3. npm run build (for TypeScript projects)
+4. Generate nginx config / request SSL (first deployment)
+5. PM2 restart (or first start via ecosystem file / server entry)
+6. Health check
+7. On failure: reset git to previous commit, rebuild, restart,
+   re-check health — or stop loudly if there is nothing to roll back to
 ```
 
 ### Docker Deployment
 
 ```
-1. Webhook triggered
-2. Git pull latest code
-3. docker-compose build (with caching)
-4. docker-compose down (stop old containers)
-5. docker-compose up -d (start new containers)
-6. Run database migrations (if configured)
-7. Generate nginx config (first deployment only)
-8. Request SSL certificate (first deployment only)
-9. Container health check
-10. HTTP health check (if configured)
-11. Rollback if any check fails
+1. Webhook triggered → branch check, lock, sync to commit
+2. Tag running images as :previous (rollback safety net)
+3. docker compose build (old containers keep serving)
+4. Start infra services & run migrations (if configured)
+5. docker compose up -d (swap to the new containers)
+6. Generate nginx config / request SSL (first deployment)
+7. Container-state health check (respects compose healthcheck:)
+8. HTTP health check (if configured; warning only)
+9. On failure: restore the recorded :previous images and verify the
+   running image IDs actually match before claiming success
 ```
 
 ### Static Site Deployment
 
 ```
-1. Webhook triggered
-2. Git pull latest code
-3. npm install
-4. npm run build
-5. Create backup of current site
-6. Copy new build to web root
-7. Generate nginx config (first deployment)
-8. Request SSL certificate (first deployment)
-9. Health check
-10. Rollback to backup if health check fails
+1. Webhook triggered → branch check, lock, sync to commit
+2. npm install + npm run build
+3. Back up current site (last 5 backups kept)
+4. Generate nginx config / request SSL (first deployment)
+5. Stage new build next to the web root
+6. Atomically swap it in (two renames — no 404 window)
+7. On failure: the old site is still serving; if the swap itself
+   broke, restore from the backup
 ```
 
 ---
@@ -597,50 +605,47 @@ After deployment, the agent performs:
 **For PM2 Applications:**
 
 1. PM2 Status Check - Verifies app is online
-2. HTTP Response Check - Confirms endpoint returns 200 OK
+2. HTTP Response Check - Polls the configured `health_check_url` (or the domain) until it returns 200 or the timeout expires
 
 **For Docker Applications:**
 
-1. Container Status Check - All containers running
-2. HTTP Response Check - API endpoint returns 200 OK
+1. Container State Check - Polls actual container state (running + compose `healthcheck:` status); exited or unhealthy containers fail immediately
+2. HTTP Response Check - Polls `health_check_url` if configured (logged as a warning on failure, doesn't trigger rollback)
 
 **For Static Sites:**
 
-1. HTTP Response Check - Site loads successfully
+- No post-deploy health check; the atomic swap means a failed deploy never replaces the serving site
 
 ### Automatic Rollback
 
 **PM2 Deployments:**
 
-- Restores previous deployment from backup
-- Restarts PM2 with old code
-- Site continues working
+- Resets git to the previous commit, rebuilds, and restarts PM2
+- Re-runs the health check and only reports success if the old version actually serves
+- If there is no previous commit (first deploy), it stops and says manual intervention is required instead of redeploying the failed code
 
 **Docker Deployments:**
 
-- Stops failed containers
+- Restores the images that were running before the deploy (recorded exactly, per service, before the build)
+- Verifies the running image IDs match the previous ones before claiming success
 - Shows container logs for debugging
-- Previous containers remain stopped
-- Manual intervention required to restore
+- First-ever deploys have nothing to restore: the stack is brought down with explicit "manual intervention" messaging
 
 **Static Sites:**
 
-- Restores previous build from backup
-- Reloads nginx
-- Site immediately reverts to working version
+- A failed build or staging step never touches the serving site
+- If the swap itself failed, the pre-deploy backup is swapped back in and nginx restarted
 
 **Example:**
 
 ```
-[INFO] Deploying client application...
+[INFO] Deploying server API...
 [SUCCESS] Build completed in 15s
-[INFO] Creating backup...
-[SUCCESS] Backup created
-[INFO] Deploying to web root...
-[SUCCESS] Files deployed
-[ERROR] Health check failed: HTTP returned 500
-[WARNING] Attempting automatic rollback...
-[SUCCESS] Previous deployment restored
+[INFO] Restarting application...
+[ERROR] Health check failed: timed out waiting for 200 from http://localhost:3000/health
+[WARNING] Rolling back server deployment...
+[WARNING] Resetting repository to commit abc1234...
+[SUCCESS] Server rolled back successfully and passed health check
 [ERROR] Deployment failed (but site still works)
 ```
 
@@ -741,14 +746,19 @@ server {
 **Repository not cloning**
 
 - Verify SSH keys are configured: `ssh -T git@github.com`
-- Check repository URL in `repos.go`
+- Check the repo exists in `/etc/deploy-agent/repos.json` (unknown repos are rejected)
 - Ensure git is installed: `git --version`
+
+**Deploy fails with "repos file does not exist"**
+
+- Install the config file: `sudo cp repos.example.json /etc/deploy-agent/repos.json` and edit it
+- Or point `DEPLOY_AGENT_REPOS_FILE` at your file's location
 
 **Build timeouts**
 
-- Increase timeout in `internal/build/builder.go`
-- Check npm install isn't stuck
-- Verify sufficient disk space: `df -h`
+- Every command has a hard deadline (npm install 10m, npm build 15m, docker build 30m); a "timed out after X" error names the phase
+- To change a limit, adjust the timeout constants in the relevant package (e.g. `internal/build/builder.go`) and rebuild
+- Check npm install isn't stuck; verify sufficient disk space: `df -h`
 
 ### Docker-Specific Issues
 
@@ -833,11 +843,13 @@ Test deployment without pushing to GitHub:
 
 ```bash
 # Set required environment variables
+# GITHUB_COMMIT must be a real, full 40-character commit hash that
+# exists on the branch — short or fake values are rejected.
 export GITHUB_REPO_NAME="your-repo"
 export GITHUB_BRANCH="main"
 export GITHUB_REPO_OWNER="username"
 export GITHUB_PUSHER="username"
-export GITHUB_COMMIT="test123"
+export GITHUB_COMMIT="$(git ls-remote git@github.com:username/your-repo.git main | cut -f1)"
 export GITHUB_REPO_FULL_NAME="username/your-repo"
 export SSL_EMAIL="your-email@example.com"
 
@@ -861,10 +873,11 @@ tail -f ~/logs/deployments/*.log
 
 ### Validation
 
-- Nginx config validated before reload
-- Build output validated before deployment
-- Git operations use safe defaults
-- All file operations use absolute paths
+- Only repos in `/etc/deploy-agent/repos.json` can deploy (strict allowlist)
+- All webhook inputs validated (repo/owner/branch names, full 40-hex commit)
+- Web roots must live under `/var/www/html/` — enforced at config load and again before any delete
+- Nginx config validated before reload; broken configs this run created are removed
+- Build output validated before deployment (stale output cleaned first)
 
 ### Backup & Recovery
 
@@ -911,9 +924,9 @@ module.exports = {
 
 Add multiple domains to serve the same application:
 
-```go
-Domain:        "example.com",
-DomainAliases: []string{"www.example.com", "app.example.com"},
+```json
+"domain": "example.com",
+"domain_aliases": ["www.example.com", "app.example.com"]
 ```
 
 All aliases will be included in the nginx config and SSL certificate.
@@ -922,8 +935,8 @@ All aliases will be included in the nginx config and SSL certificate.
 
 Backend APIs can run on any available port:
 
-```go
-Port: 8080,  // Accessible at api.yourdomain.com -> localhost:8080
+```json
+"port": 8080
 ```
 
 Nginx automatically proxies to the specified port.
@@ -932,34 +945,36 @@ Nginx automatically proxies to the specified port.
 
 Deploy frontend and backend together:
 
-```go
+```json
 "my-fullstack-app": {
-    Name:          "my-fullstack-app",
-    ProjectType:   types.ProjectTypeAPITS,
-    FullStack:     true,
-    ClientDir:     "client",
-    ServerDir:     "server",
-    Domain:        "myapp.com",
-    Port:          3000,
-    // ... other fields
+  "repo_dir": "/home/youruser/my-fullstack-app",
+  "project_type": "API_TS",
+  "full_stack": true,
+  "client_dir": "client",
+  "server_dir": "server",
+  "web_root": "/var/www/html/my-fullstack-app",
+  "domain": "myapp.com",
+  "port": 3000
 }
 ```
 
 This creates:
 
 - `myapp.com` serving the frontend
-- `api.myapp.com` proxying to backend on port 3000
+- `api.myapp.com` proxying to backend on port 3000 (override with `server_domain`)
 
 ### Docker with Custom Migrations
 
 For complex migration scenarios:
 
-```go
-RequiresMigrations: true,
-MigrationCommand:   "npm run migrate:prod && npm run seed:prod",
+```json
+"requires_migrations": true,
+"migration_command": "npm run migrate:prod",
+"migration_service": "api",
+"infra_services": ["postgres", "redis"]
 ```
 
-The agent will execute your custom migration command inside the running container.
+The agent starts the infra services, waits until they're actually healthy, then runs the migration command in a throwaway container of the configured service — before the new code goes live. Migrations should be backward-compatible with the previous release: a rollback restores containers, not the database schema.
 
 ---
 
@@ -1084,6 +1099,6 @@ MIT License - See LICENSE file for details
 
 - Issues: [GitHub Issues](https://github.com/Brayzonn/deploy-agent/issues)
 - Documentation: This README
-- Examples: See `internal/config/repos.go` for configuration examples
+- Examples: See `repos.example.json` for configuration examples
 
 ---
