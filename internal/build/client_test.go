@@ -190,7 +190,7 @@ func TestValidateWebRoot(t *testing.T) {
 		{"/var/www/html/", false},
 		{"/var/www/html/../..", false},
 		{"/var/www/html/site/../../../etc", false},
-		{"/home/zoney", false},
+		{"/home/deploy", false},
 		{"/", false},
 		{"", false},
 	}

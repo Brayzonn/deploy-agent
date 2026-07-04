@@ -12,12 +12,12 @@ import (
 /* webhookEnv returns a valid set of webhook values for tests to mutate. */
 func webhookEnv() map[string]string {
 	return map[string]string{
-		"GITHUB_REPO_NAME":      "notifykit",
+		"GITHUB_REPO_NAME":      "example-app",
 		"GITHUB_BRANCH":         "main",
 		"GITHUB_REPO_OWNER":     "Brayzonn",
 		"GITHUB_PUSHER":         "Brayzonn",
 		"GITHUB_COMMIT":         strings.Repeat("a", 40),
-		"GITHUB_REPO_FULL_NAME": "Brayzonn/notifykit",
+		"GITHUB_REPO_FULL_NAME": "Brayzonn/example-app",
 	}
 }
 
@@ -33,8 +33,8 @@ func TestValidateWebhookValues(t *testing.T) {
 
 	valid := webhookEnv()
 	valid["GITHUB_BRANCH"] = "feature/new-thing"
-	valid["GITHUB_REPO_NAME"] = "URL-Shortener-App"
-	valid["GITHUB_REPO_FULL_NAME"] = "Brayzonn/URL-Shortener-App"
+	valid["GITHUB_REPO_NAME"] = "example-api"
+	valid["GITHUB_REPO_FULL_NAME"] = "Brayzonn/example-api"
 	if err := validateWebhookValues(valid); err != nil {
 		t.Fatalf("feature branch / hyphenated name rejected: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestValidateWebhookValues(t *testing.T) {
 		{"GITHUB_BRANCH", "a b", "whitespace in branch"},
 		{"GITHUB_COMMIT", "abc", "short commit hash"},
 		{"GITHUB_COMMIT", strings.Repeat("z", 40), "non-hex commit hash"},
-		{"GITHUB_REPO_FULL_NAME", "someone-else/notifykit", "full name not matching owner/name"},
+		{"GITHUB_REPO_FULL_NAME", "someone-else/example-app", "full name not matching owner/name"},
 	}
 
 	for _, tc := range rejected {
@@ -67,13 +67,13 @@ func TestValidateWebhookValues(t *testing.T) {
 
 /* TestGetRepoConfigAllowlist checks unknown repos are rejected and known ones get a deploy branch. */
 func TestGetRepoConfigAllowlist(t *testing.T) {
-	writeReposFile(t, `{"notifykit": {"repo_dir": "/home/zoney/notifykit", "project_type": "DOCKER"}}`)
+	writeReposFile(t, `{"example-app": {"repo_dir": "/home/deploy/example-app", "project_type": "DOCKER"}}`)
 
 	if _, err := GetRepoConfig("not-a-real-repo", "Brayzonn"); err == nil {
 		t.Error("unknown repo was accepted, want allowlist rejection")
 	}
 
-	cfg, err := GetRepoConfig("notifykit", "Brayzonn")
+	cfg, err := GetRepoConfig("example-app", "Brayzonn")
 	if err != nil {
 		t.Fatalf("known repo rejected: %v", err)
 	}

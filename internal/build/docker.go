@@ -39,9 +39,9 @@ and the safety tag keeping that ID alive.
 */
 type previousImage struct {
 	service   string
-	imageName string // reference compose resolves for this service, e.g. "mines_api:latest"
+	imageName string // reference compose resolves for this service, e.g. "example_api:latest"
 	imageID   string // image ID running before this deploy
-	prevTag   string // safety tag holding imageID, e.g. "mines-api:previous"
+	prevTag   string // safety tag holding imageID, e.g. "example-api:previous"
 }
 
 // ============================================================

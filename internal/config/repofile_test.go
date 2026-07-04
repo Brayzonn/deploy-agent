@@ -30,7 +30,7 @@ func writeReposFile(t *testing.T, content string) {
 func TestGetRepoConfigFromFile(t *testing.T) {
 	writeReposFile(t, `{
 		"my-app": {
-			"repo_dir": "/home/zoney/my-app",
+			"repo_dir": "/home/deploy/my-app",
 			"web_root": "/var/www/html/my-app",
 			"project_type": "CLIENT",
 			"client_dir": ".",
@@ -52,7 +52,7 @@ func TestGetRepoConfigFromFile(t *testing.T) {
 		t.Errorf("Domain = %q, want %q", cfg.Domain, "my-app.example.com")
 	}
 
-	if _, err := GetRepoConfig("notifykit", "Brayzonn"); err == nil {
+	if _, err := GetRepoConfig("example-app", "Brayzonn"); err == nil {
 		t.Error("repo absent from the file was accepted, want allowlist rejection")
 	}
 }
@@ -63,15 +63,15 @@ func TestReposFileRejectsBadConfigs(t *testing.T) {
 		name    string
 		content string
 	}{
-		{"unknown field", `{"my-app": {"repo_dir": "/home/zoney/my-app", "project_type": "CLIENT", "helth_check_url": "x"}}`},
+		{"unknown field", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "CLIENT", "helth_check_url": "x"}}`},
 		{"invalid JSON", `{"my-app": `},
-		{"unknown project type", `{"my-app": {"repo_dir": "/home/zoney/my-app", "project_type": "WASM"}}`},
-		{"relative repo dir", `{"my-app": {"repo_dir": "home/zoney/my-app", "project_type": "CLIENT"}}`},
-		{"repo dir traversal", `{"my-app": {"repo_dir": "/home/zoney/../../etc", "project_type": "CLIENT"}}`},
-		{"web root outside served parent", `{"my-app": {"repo_dir": "/home/zoney/my-app", "project_type": "CLIENT", "web_root": "/etc/nginx"}}`},
-		{"web root escaping via traversal", `{"my-app": {"repo_dir": "/home/zoney/my-app", "project_type": "CLIENT", "web_root": "/var/www/html/../.."}}`},
-		{"client web root outside served parent", `{"my-app": {"repo_dir": "/home/zoney/my-app", "project_type": "DOCKER", "client_web_root": "/root"}}`},
-		{"name not matching key", `{"my-app": {"name": "other-app", "repo_dir": "/home/zoney/my-app", "project_type": "CLIENT"}}`},
+		{"unknown project type", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "WASM"}}`},
+		{"relative repo dir", `{"my-app": {"repo_dir": "home/deploy/my-app", "project_type": "CLIENT"}}`},
+		{"repo dir traversal", `{"my-app": {"repo_dir": "/home/deploy/../../etc", "project_type": "CLIENT"}}`},
+		{"web root outside served parent", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "CLIENT", "web_root": "/etc/nginx"}}`},
+		{"web root escaping via traversal", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "CLIENT", "web_root": "/var/www/html/../.."}}`},
+		{"client web root outside served parent", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "DOCKER", "client_web_root": "/root"}}`},
+		{"name not matching key", `{"my-app": {"name": "other-app", "repo_dir": "/home/deploy/my-app", "project_type": "CLIENT"}}`},
 		{"null config", `{"my-app": null}`},
 	}
 
@@ -89,7 +89,7 @@ func TestReposFileRejectsBadConfigs(t *testing.T) {
 func TestReposFileMissing(t *testing.T) {
 	t.Setenv(reposFileEnvVar, filepath.Join(t.TempDir(), "does-not-exist.json"))
 
-	_, err := GetRepoConfig("notifykit", "Brayzonn")
+	_, err := GetRepoConfig("example-app", "Brayzonn")
 	if err == nil {
 		t.Fatal("missing repos file was accepted, want error")
 	}
