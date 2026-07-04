@@ -63,11 +63,11 @@ func (c *ClientBuilder) Build() (*types.BuildOutput, error) {
 
 	result, err := c.builder.RunBuild()
 	if err != nil {
-		return result, err
+		return nil, err
 	}
 
 	if err := c.builder.ValidateBuildOutput(result.OutputDir); err != nil {
-		return result, err
+		return nil, err
 	}
 
 	return result, nil
@@ -78,11 +78,13 @@ func (c *ClientBuilder) Build() (*types.BuildOutput, error) {
 // ============================================================
 
 /*
-Deploy backs up the current web root, clears it, and copies the new
-build output in. Returns the backup path ("" when the web root had
-nothing to back up) so the caller can restore from it if a later
-step fails. A failed backup aborts the deploy before the web root is
-touched — the backup is what makes the wipe safe.
+Deploy backs up the current web root, stages the new build into a
+sibling directory, then swaps it into place with renames — the old
+site serves until the swap, so a failed copy never leaves a partial
+or empty web root. Returns the backup path ("" when the web root
+had nothing to back up, or when a failure left the old site still
+serving and there is nothing to restore). A failed backup aborts
+the deploy before anything else happens.
 */
 func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 	c.log.Info("Deploying client to web root...")
@@ -96,14 +98,18 @@ func (c *ClientBuilder) Deploy(buildOutput string) (string, error) {
 		return "", fmt.Errorf("aborting deploy, backup of current web root failed: %w", err)
 	}
 
-	c.log.Infof("Clearing web root: %s", c.webRoot)
-	if err := c.clearWebRoot(); err != nil {
-		return backupDir, fmt.Errorf("failed to clear web root: %w", err)
+	c.log.Info("Staging new build next to web root...")
+	staging, err := c.stage(buildOutput)
+	if err != nil {
+		return "", fmt.Errorf("old site still serving: %w", err)
 	}
 
-	c.log.Info("Copying files to web root...")
-	if err := c.copyToWebRoot(buildOutput); err != nil {
-		return backupDir, fmt.Errorf("failed to copy files to web root: %w", err)
+	c.log.Infof("Swapping new build into web root: %s", c.webRoot)
+	if disturbed, err := c.swapIn(staging); err != nil {
+		if disturbed {
+			return backupDir, fmt.Errorf("web root left broken: %w", err)
+		}
+		return "", fmt.Errorf("old site still serving: %w", err)
 	}
 
 	c.log.Success("Client deployed successfully")
@@ -187,35 +193,72 @@ func (c *ClientBuilder) validateWebRoot() error {
 	return nil
 }
 
-/* clearWebRoot removes all files from the web root, creating it first if needed. */
-func (c *ClientBuilder) clearWebRoot() error {
-	if err := os.MkdirAll(c.webRoot, 0755); err != nil {
-		return fmt.Errorf("failed to create web root: %w", err)
+// ============================================================
+// Staging & swap
+// ============================================================
+
+/*
+stage copies src's contents into the "<webRoot>.new" sibling
+directory, replacing any leftover from a crashed run. Staging next
+to the web root keeps the swap on one filesystem so the renames in
+swapIn stay atomic. The web root itself is untouched.
+*/
+func (c *ClientBuilder) stage(src string) (string, error) {
+	staging := c.webRoot + ".new"
+
+	if err := os.RemoveAll(staging); err != nil {
+		return "", fmt.Errorf("failed to remove leftover staging directory: %w", err)
+	}
+	if err := os.MkdirAll(staging, 0755); err != nil {
+		return "", fmt.Errorf("failed to create staging directory: %w", err)
 	}
 
-	entries, err := os.ReadDir(c.webRoot)
+	output, err := run.Cmd(copyTimeout, "", "cp", "-r", src+"/.", staging+"/")
 	if err != nil {
-		return fmt.Errorf("failed to read web root: %w", err)
+		os.RemoveAll(staging)
+		return "", fmt.Errorf("failed to stage files: %w\nOutput: %s", err, output)
 	}
 
-	for _, entry := range entries {
-		path := filepath.Join(c.webRoot, entry.Name())
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("failed to remove %s: %w", path, err)
+	return staging, nil
+}
+
+/*
+swapIn replaces the web root with the staged directory using two
+renames — current root aside to "<webRoot>.old", staging into place
+— so the site never serves a partially-copied tree. If the second
+rename fails, the old root is moved back. The returned disturbed
+flag is true only when that recovery also failed and the web root
+is actually broken, telling the caller a backup restore is needed.
+*/
+func (c *ClientBuilder) swapIn(staging string) (disturbed bool, err error) {
+	oldDir := c.webRoot + ".old"
+
+	if err := os.RemoveAll(oldDir); err != nil {
+		os.RemoveAll(staging)
+		return false, fmt.Errorf("failed to remove leftover directory %s: %w", oldDir, err)
+	}
+
+	hadPrevious := false
+	if _, statErr := os.Stat(c.webRoot); statErr == nil {
+		hadPrevious = true
+		if err := os.Rename(c.webRoot, oldDir); err != nil {
+			os.RemoveAll(staging)
+			return false, fmt.Errorf("failed to move current web root aside: %w", err)
 		}
 	}
 
-	return nil
-}
-
-/* copyToWebRoot copies files from the build output into the web root. */
-func (c *ClientBuilder) copyToWebRoot(buildOutput string) error {
-	output, err := run.Cmd(copyTimeout, "", "cp", "-r", buildOutput+"/.", c.webRoot+"/")
-	if err != nil {
-		return fmt.Errorf("copy failed: %w\nOutput: %s", err, output)
+	if err := os.Rename(staging, c.webRoot); err != nil {
+		if hadPrevious {
+			if backErr := os.Rename(oldDir, c.webRoot); backErr != nil {
+				return true, fmt.Errorf("swap failed and the previous version could not be moved back (%v): %w", backErr, err)
+			}
+		}
+		os.RemoveAll(staging)
+		return false, fmt.Errorf("failed to swap new build into place: %w", err)
 	}
 
-	return nil
+	os.RemoveAll(oldDir)
+	return false, nil
 }
 
 // ============================================================
@@ -223,8 +266,9 @@ func (c *ClientBuilder) copyToWebRoot(buildOutput string) error {
 // ============================================================
 
 /*
-RestoreFromBackup clears the (broken) web root and copies a prior
-backup back into place, then restarts nginx to pick up the change.
+RestoreFromBackup stages a prior backup and swaps it over the
+(broken) web root the same way a deploy goes in, then restarts
+nginx to pick up the change.
 */
 func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	if backupDir == "" {
@@ -241,15 +285,13 @@ func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 		return fmt.Errorf("backup directory does not exist: %s", backupDir)
 	}
 
-	c.log.Info("Clearing broken deployment...")
-	if err := c.clearWebRoot(); err != nil {
-		return fmt.Errorf("failed to clear web root: %w", err)
+	staging, err := c.stage(backupDir)
+	if err != nil {
+		return fmt.Errorf("failed to stage backup for restore: %w", err)
 	}
 
-	c.log.Info("Copying backup files to web root...")
-	output, err := run.Cmd(copyTimeout, "", "cp", "-r", backupDir+"/.", c.webRoot+"/")
-	if err != nil {
-		return fmt.Errorf("failed to restore backup: %w\nOutput: %s", err, output)
+	if _, err := c.swapIn(staging); err != nil {
+		return fmt.Errorf("failed to swap backup into place: %w", err)
 	}
 
 	c.RestartNginx()

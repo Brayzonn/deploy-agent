@@ -123,11 +123,7 @@ func (b *Builder) RunBuild() (*types.BuildOutput, error) {
 
 	if err != nil {
 		b.log.Errorf("Build failed after %v", duration)
-		return &types.BuildOutput{
-			Success:  false,
-			Duration: duration,
-			Error:    fmt.Errorf("build failed: %w\nOutput: %s", err, output),
-		}, err
+		return nil, fmt.Errorf("build failed: %w\nOutput: %s", err, output)
 	}
 
 	outputDir := ""
@@ -136,21 +132,15 @@ func (b *Builder) RunBuild() (*types.BuildOutput, error) {
 	} else if _, err := os.Stat(buildPath); err == nil {
 		outputDir = buildPath
 	} else {
-		return &types.BuildOutput{
-			Success:  false,
-			Duration: duration,
-			Error:    fmt.Errorf("build produced no output directory (dist/build missing)"),
-		}, fmt.Errorf("build produced no output")
+		return nil, fmt.Errorf("build produced no output directory (dist/build missing)")
 	}
 
 	b.log.Successf("Build completed in %v", duration)
 	b.log.Infof("Build output: %s", outputDir)
 
 	return &types.BuildOutput{
-		Success:   true,
 		OutputDir: outputDir,
 		Duration:  duration,
-		Error:     nil,
 	}, nil
 }
 

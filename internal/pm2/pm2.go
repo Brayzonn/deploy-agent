@@ -12,7 +12,10 @@ import (
 
 const pm2Timeout = 1 * time.Minute
 
-type PM2Manager struct {
+/* sleep is swapped out in tests so EnsureRunning's retry loop runs instantly. */
+var sleep = time.Sleep
+
+type App struct {
 	appName string
 	workDir string
 	log     *logger.Logger
@@ -29,9 +32,9 @@ type PM2Process struct {
 // Construction
 // ============================================================
 
-/* New creates a PM2Manager for the given app name and working directory. */
-func New(appName, workDir string, log *logger.Logger) *PM2Manager {
-	return &PM2Manager{
+/* New creates an App handle for the given app name and working directory. */
+func New(appName, workDir string, log *logger.Logger) *App {
+	return &App{
 		appName: appName,
 		workDir: workDir,
 		log:     log,
@@ -49,7 +52,7 @@ func IsInstalled() bool {
 // ============================================================
 
 /* AppExists checks whether the PM2 app is present in `pm2 jlist`. */
-func (p *PM2Manager) AppExists() (bool, error) {
+func (p *App) AppExists() (bool, error) {
 	output, err := run.Out(pm2Timeout, "", "pm2", "jlist")
 	if err != nil {
 		return false, fmt.Errorf("failed to get PM2 list: %w", err)
@@ -70,7 +73,7 @@ func (p *PM2Manager) AppExists() (bool, error) {
 }
 
 /* GetStatus returns the current PM2 status string for the app (e.g. "online"). */
-func (p *PM2Manager) GetStatus() (string, error) {
+func (p *App) GetStatus() (string, error) {
 	output, err := run.Out(pm2Timeout, "", "pm2", "jlist")
 	if err != nil {
 		return "", fmt.Errorf("failed to get PM2 list: %w", err)
@@ -100,7 +103,7 @@ configured, otherwise from the server entry file under the app's
 name. Errors when neither is configured — `pm2 start ""` can never
 succeed, so failing with the reason beats retrying it.
 */
-func (p *PM2Manager) Start(ecosystemFile, serverEntry string) error {
+func (p *App) Start(ecosystemFile, serverEntry string) error {
 	var args []string
 	switch {
 	case ecosystemFile != "":
@@ -125,7 +128,7 @@ func (p *PM2Manager) Start(ecosystemFile, serverEntry string) error {
 Restart restarts the PM2 app, preferring the ecosystem file when one
 is given and falling back to restarting by app name.
 */
-func (p *PM2Manager) Restart(ecosystemFile string) error {
+func (p *App) Restart(ecosystemFile string) error {
 	p.log.Infof("Restarting PM2 app '%s'...", p.appName)
 
 	target := p.appName
@@ -142,7 +145,7 @@ func (p *PM2Manager) Restart(ecosystemFile string) error {
 }
 
 /* Delete deletes the PM2 app. */
-func (p *PM2Manager) Delete() error {
+func (p *App) Delete() error {
 	p.log.Infof("Deleting PM2 app '%s'...", p.appName)
 
 	if _, err := run.Cmd(pm2Timeout, p.workDir, "pm2", "delete", p.appName); err != nil {
@@ -157,7 +160,7 @@ EnsureRunning polls the app's status and nudges it toward "online":
 starting it if missing, restarting it if stopped, and deleting and
 recreating it if errored. Gives up after maxAttempts.
 */
-func (p *PM2Manager) EnsureRunning(ecosystemFile, serverEntry string, maxAttempts int) error {
+func (p *App) EnsureRunning(ecosystemFile, serverEntry string, maxAttempts int) error {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		status, err := p.GetStatus()
 
@@ -183,7 +186,7 @@ func (p *PM2Manager) EnsureRunning(ecosystemFile, serverEntry string, maxAttempt
 			p.Delete()
 		}
 
-		time.Sleep(3 * time.Second)
+		sleep(3 * time.Second)
 	}
 
 	status, err := p.GetStatus()
@@ -203,7 +206,7 @@ func (p *PM2Manager) EnsureRunning(ecosystemFile, serverEntry string, maxAttempt
 // ============================================================
 
 /* Save persists the current PM2 process list so it survives a reboot. */
-func (p *PM2Manager) Save() error {
+func (p *App) Save() error {
 	if _, err := run.Cmd(pm2Timeout, "", "pm2", "save"); err != nil {
 		p.log.Warning("Failed to save PM2 configuration")
 		return err

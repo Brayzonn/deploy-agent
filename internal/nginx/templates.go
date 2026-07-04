@@ -14,7 +14,7 @@ generateClientConfig builds a static-file server block: serves
 webRoot directly, falls back to index.html for client-side routing,
 and adds standard security headers, gzip, and asset caching.
 */
-func (n *NginxManager) generateClientConfig() string {
+func (n *Site) generateClientConfig() string {
 	serverNames := n.domain
 	if len(n.domainAliases) > 0 {
 		serverNames = n.domain + " " + strings.Join(n.domainAliases, " ")
@@ -53,7 +53,7 @@ generateAPIConfig builds a reverse-proxy server block that forwards
 requests to the app's local port, preserving headers needed for
 WebSocket upgrades and client IP/protocol propagation.
 */
-func (n *NginxManager) generateAPIConfig() string {
+func (n *Site) generateAPIConfig() string {
 	serverNames := n.domain
 	if len(n.domainAliases) > 0 {
 		serverNames = n.domain + " " + strings.Join(n.domainAliases, " ")

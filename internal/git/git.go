@@ -19,7 +19,7 @@ const (
 	checkoutTimeout = 2 * time.Minute
 )
 
-type GitManager struct {
+type Repo struct {
 	repoDir string
 	branch  string
 	log     *logger.Logger
@@ -29,9 +29,9 @@ type GitManager struct {
 // Construction
 // ============================================================
 
-/* New creates a GitManager for repoDir tracking the given branch. */
-func New(repoDir, branch string, log *logger.Logger) *GitManager {
-	return &GitManager{
+/* New creates a Repo for repoDir tracking the given branch. */
+func New(repoDir, branch string, log *logger.Logger) *Repo {
+	return &Repo{
 		repoDir: repoDir,
 		branch:  branch,
 		log:     log,
@@ -43,7 +43,7 @@ func New(repoDir, branch string, log *logger.Logger) *GitManager {
 // ============================================================
 
 /* Validate checks that repoDir exists and is a git repository. */
-func (g *GitManager) Validate() error {
+func (g *Repo) Validate() error {
 	if _, err := os.Stat(g.repoDir); os.IsNotExist(err) {
 		return fmt.Errorf("repository directory does not exist: %s", g.repoDir)
 	}
@@ -65,7 +65,7 @@ LocalChanges returns the porcelain status lines for local changes to
 tracked files. Untracked files are excluded — SyncToCommit leaves
 them alone, so they aren't at risk.
 */
-func (g *GitManager) LocalChanges() ([]string, error) {
+func (g *Repo) LocalChanges() ([]string, error) {
 	output, err := run.Out(queryTimeout, g.repoDir, "git", "status", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("failed to check git status: %w", err)
@@ -93,7 +93,7 @@ starting state the same way (wrong branch, diverged history, force-
 pushed remote, dirty tracked files). Local changes to tracked files
 are discarded; untracked files are left alone.
 */
-func (g *GitManager) SyncToCommit(commit string) error {
+func (g *Repo) SyncToCommit(commit string) error {
 	g.log.Infof("Syncing checkout to %s@%s...", g.branch, short(commit))
 
 	if output, err := run.Cmd(transferTimeout, g.repoDir, "git", "fetch", "origin", g.branch); err != nil {
@@ -116,7 +116,7 @@ func (g *GitManager) SyncToCommit(commit string) error {
 CloneIfMissing clones the repo into repoDir if it isn't already
 present locally. Returns true if a fresh clone happened.
 */
-func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
+func (g *Repo) CloneIfMissing(repoFullName string) (bool, error) {
 	if _, err := os.Stat(g.repoDir); err == nil {
 		g.log.Info("Repository already exists, skipping clone")
 		return false, nil
@@ -142,7 +142,7 @@ func (g *GitManager) CloneIfMissing(repoFullName string) (bool, error) {
 }
 
 /* ResetHard resets the repo to a specific commit; used to roll back a failed deploy. */
-func (g *GitManager) ResetHard(commit string) error {
+func (g *Repo) ResetHard(commit string) error {
 	g.log.Warningf("Resetting repository to commit %s...", short(commit))
 
 	output, err := run.Cmd(checkoutTimeout, g.repoDir, "git", "reset", "--hard", commit)
@@ -159,7 +159,7 @@ func (g *GitManager) ResetHard(commit string) error {
 // ============================================================
 
 /* GetCurrentCommit returns the current HEAD commit hash. */
-func (g *GitManager) GetCurrentCommit() (string, error) {
+func (g *Repo) GetCurrentCommit() (string, error) {
 	output, err := run.Out(queryTimeout, g.repoDir, "git", "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("failed to get current commit: %w", err)

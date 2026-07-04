@@ -11,7 +11,7 @@ import (
 
 const certbotTimeout = 5 * time.Minute
 
-type SSLManager struct {
+type Cert struct {
 	domain        string
 	domainAliases []string
 	email         string
@@ -22,9 +22,9 @@ type SSLManager struct {
 // Construction
 // ============================================================
 
-/* New creates an SSLManager for the given domain and its aliases. */
-func New(domain string, domainAliases []string, email string, log *logger.Logger) *SSLManager {
-	return &SSLManager{
+/* New creates a Cert for the given domain and its aliases. */
+func New(domain string, domainAliases []string, email string, log *logger.Logger) *Cert {
+	return &Cert{
 		domain:        domain,
 		domainAliases: domainAliases,
 		email:         email,
@@ -41,7 +41,7 @@ RequestCertificate runs certbot for the domain and its aliases. A
 Let's Encrypt rate-limit response and an "already valid" response
 are both treated as success rather than failure.
 */
-func (s *SSLManager) RequestCertificate() error {
+func (s *Cert) RequestCertificate() error {
 	s.log.Info("Setting up SSL certificate...")
 
 	domains := []string{"-d", s.domain}
@@ -85,7 +85,7 @@ func (s *SSLManager) RequestCertificate() error {
 }
 
 /* RenewCertificate runs certbot renew for the domain. */
-func (s *SSLManager) RenewCertificate() error {
+func (s *Cert) RenewCertificate() error {
 	s.log.Info("Renewing SSL certificate...")
 
 	output, err := run.Cmd(certbotTimeout, "", "sudo", "certbot", "renew", "--nginx", "--non-interactive")
@@ -102,6 +102,6 @@ func (s *SSLManager) RenewCertificate() error {
 // ============================================================
 
 /* Setup requests a certificate for the domain. */
-func (s *SSLManager) Setup() error {
+func (s *Cert) Setup() error {
 	return s.RequestCertificate()
 }

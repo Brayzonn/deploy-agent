@@ -9,6 +9,28 @@ import (
 )
 
 // ============================================================
+// Test stubbing
+// ============================================================
+
+/*
+stub, when set, intercepts every command instead of executing it.
+It exists so packages built on run can unit-test their command
+sequencing and output parsing without real git/docker/pm2 binaries
+on the machine; production code never sets it.
+*/
+var stub func(dir, name string, args ...string) (string, error)
+
+/*
+Stub installs f as the command interceptor and returns a restore
+func for the test to defer. Not safe for parallel tests — the stub
+is process-global, like the commands it replaces.
+*/
+func Stub(f func(dir, name string, args ...string) (string, error)) (restore func()) {
+	stub = f
+	return func() { stub = nil }
+}
+
+// ============================================================
 // Command execution
 // ============================================================
 
@@ -19,6 +41,10 @@ a deployment forever. Returns combined stdout+stderr — what error
 messages want.
 */
 func Cmd(timeout time.Duration, dir, name string, args ...string) (string, error) {
+	if stub != nil {
+		return stub(dir, name, args...)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -31,6 +57,10 @@ func Cmd(timeout time.Duration, dir, name string, args ...string) (string, error
 
 /* Out is Cmd but returns stdout only, for command output that gets parsed. */
 func Out(timeout time.Duration, dir, name string, args ...string) (string, error) {
+	if stub != nil {
+		return stub(dir, name, args...)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -43,6 +73,10 @@ func Out(timeout time.Duration, dir, name string, args ...string) (string, error
 
 /* Stdin is Cmd with the given reader wired to the command's stdin. */
 func Stdin(timeout time.Duration, dir string, stdin io.Reader, name string, args ...string) (string, error) {
+	if stub != nil {
+		return stub(dir, name, args...)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 

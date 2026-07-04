@@ -20,7 +20,7 @@ type Executor struct {
 	ctx        *types.DeploymentContext
 	cfg        *config.Config
 	log        *logger.Logger
-	git        *git.GitManager
+	git        *git.Repo
 	prevCommit string // commit hash before sync, used for rollback
 }
 
@@ -30,13 +30,13 @@ type Executor struct {
 
 /* New creates an Executor for the given deployment context. */
 func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *Executor {
-	gitManager := git.New(ctx.Config.RepoDir, ctx.Branch, log)
+	repo := git.New(ctx.Config.RepoDir, ctx.Branch, log)
 
 	return &Executor{
 		ctx: ctx,
 		cfg: cfg,
 		log: log,
-		git: gitManager,
+		git: repo,
 	}
 }
 
@@ -142,7 +142,7 @@ actually serving. If there is no commit to roll back to (fresh clone
 or failed capture), it stops instead of rebuilding the code that
 just failed, and says so.
 */
-func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string) {
+func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir, domain string) {
 	e.log.Warning("Rolling back server deployment...")
 
 	if !e.rollbackGit() {
@@ -162,22 +162,59 @@ func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir string
 		return
 	}
 
-	healthChecker := health.New(
-		e.ctx.Config.Domain,
+	if err := e.serverHealthCheck(domain); err != nil {
+		e.log.Errorf("Rolled-back version failed its health check too: %v — MANUAL INTERVENTION REQUIRED", err)
+		return
+	}
+
+	e.log.Success("Server rolled back successfully and passed health check")
+}
+
+/*
+serverHealthCheck runs the configured health check against the given
+domain — the domain is a parameter because fullstack deploys serve
+the API from a different domain than the repo's primary one.
+*/
+func (e *Executor) serverHealthCheck(domain string) error {
+	return health.New(
+		domain,
 		e.ctx.Config.Port,
 		e.ctx.RepoName,
 		e.ctx.Config.ProjectType,
 		e.ctx.Config.HealthCheckURL,
 		e.ctx.Config.HealthCheckTimeout,
 		e.log,
-	)
+	).Check()
+}
 
-	if err := healthChecker.Check(); err != nil {
-		e.log.Errorf("Rolled-back version failed its health check too: %v — MANUAL INTERVENTION REQUIRED", err)
+// ============================================================
+// Edge (nginx + SSL)
+// ============================================================
+
+/*
+setupEdge configures nginx and requests an SSL certificate for a
+site. Failures are warnings, not deploy failures — the app is up
+either way, and edge config is fixable without redeploying. No-ops
+when no domain is configured, or when a proxied (non-client) site
+has no port to proxy to.
+*/
+func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt types.ProjectType, port int) {
+	if domain == "" {
+		return
+	}
+	if pt != types.ProjectTypeClient && port <= 0 {
 		return
 	}
 
-	e.log.Success("Server rolled back successfully and passed health check")
+	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, e.log)
+	if err := nginxMgr.Setup(); err != nil {
+		e.log.Warningf("Nginx setup failed: %v", err)
+	}
+
+	sslMgr := ssl.New(domain, aliases, e.cfg.SSLEmail, e.log)
+	if err := sslMgr.Setup(); err != nil {
+		e.log.Warningf("SSL setup failed: %v", err)
+	}
 }
 
 // ============================================================
@@ -195,10 +232,10 @@ func (e *Executor) deploy() error {
 	}
 
 	if e.ctx.Config.ProjectType == types.ProjectTypeClient {
-		return e.deployClient()
+		return e.deployClient(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, e.ctx.Config.WebRoot)
 	}
 
-	return e.deployServer()
+	return e.deployServer(e.ctx.Config.Domain, e.ctx.Config.DomainAliases)
 }
 
 /*
@@ -230,73 +267,44 @@ func (e *Executor) deployDocker() error {
 
 	buildResult, err := dockerBuilder.Build()
 	if err != nil {
-		e.log.Errorf("Docker build failed: %v", err)
 		return fmt.Errorf("docker build failed: %w", err)
 	}
 
 	e.log.Successf("Docker build completed in %v", buildResult.Duration)
 
+	migrationsRan := false
 	if e.ctx.Config.RequiresMigrations {
 		e.log.State(types.StateRunningMigrations)
 		if err := dockerBuilder.StartInfra(e.ctx.Config.InfraServices); err != nil {
-			e.log.Errorf("Failed to start infra services: %v", err)
+			e.log.Warning("Attempting rollback after infra startup failure...")
 			dockerBuilder.Rollback()
 			return fmt.Errorf("infra startup failed: %w", err)
 		}
-		if err := dockerBuilder.RunMigrations(e.ctx.Config.MigrationCommand); err != nil {
-			e.log.Errorf("Migrations failed: %v", err)
+		if err := dockerBuilder.RunMigrations(e.ctx.Config.MigrationService, e.ctx.Config.MigrationCommand); err != nil {
 			e.log.Warning("Attempting rollback after migration failure...")
+			e.log.Warning("Database may be PARTIALLY MIGRATED — rollback restores containers, not schema; verify migration state manually")
 			dockerBuilder.Rollback()
 			return fmt.Errorf("migrations failed: %w", err)
 		}
+		migrationsRan = true
 		e.log.Success("Database migrations completed")
 	}
 
 	e.log.State(types.StateDeployingDocker)
 	if err := dockerBuilder.Deploy(); err != nil {
-		e.log.Errorf("Docker deployment failed: %v", err)
-
 		logs, _ := dockerBuilder.GetLogs("", 50)
 		e.log.Error("Container logs:")
 		e.log.Error(logs)
 
 		e.log.Warning("Attempting rollback...")
+		if migrationsRan {
+			e.log.Warning("Database schema was already migrated for the new version — rolled-back containers will run OLD code against the NEW schema; this only works if the migrations were backward-compatible")
+		}
 		dockerBuilder.Rollback()
 		return fmt.Errorf("docker deployment failed: %w", err)
 	}
 
-	if e.ctx.Config.Domain != "" && e.ctx.Config.Port > 0 {
-		nginxMgr := nginx.New(
-			e.ctx.Config.Domain,
-			e.ctx.Config.DomainAliases,
-			"",
-			e.ctx.Config.ProjectType,
-			e.ctx.Config.Port,
-			e.log,
-		)
-
-		if err := nginxMgr.Setup(); err != nil {
-			e.log.Warningf("Nginx setup failed: %v", err)
-		}
-
-		sslMgr := ssl.New(
-			e.ctx.Config.Domain,
-			e.ctx.Config.DomainAliases,
-			e.cfg.SSLEmail,
-			e.log,
-		)
-
-		if err := sslMgr.Setup(); err != nil {
-			e.log.Warningf("SSL setup failed: %v", err)
-		}
-	}
-
-	if err := dockerBuilder.CheckHealth(); err != nil {
-		e.log.Errorf("Container health check failed: %v", err)
-		e.log.Warning("Attempting rollback after health check failure...")
-		dockerBuilder.Rollback()
-		return fmt.Errorf("health check failed: %w", err)
-	}
+	e.setupEdge(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port)
 
 	if e.ctx.Config.HealthCheckURL != "" {
 		healthChecker := health.New(
@@ -322,24 +330,7 @@ func (e *Executor) deployDocker() error {
 	if e.ctx.Config.ClientWebRoot != "" {
 		e.log.Info("Deploying client application...")
 
-		origDomain := e.ctx.Config.Domain
-		origAliases := e.ctx.Config.DomainAliases
-		origWebRoot := e.ctx.Config.WebRoot
-		origType := e.ctx.Config.ProjectType
-
-		e.ctx.Config.Domain = e.ctx.Config.ClientDomain
-		e.ctx.Config.DomainAliases = e.ctx.Config.ClientDomainAliases
-		e.ctx.Config.WebRoot = e.ctx.Config.ClientWebRoot
-		e.ctx.Config.ProjectType = types.ProjectTypeClient
-
-		err := e.deployClient()
-
-		e.ctx.Config.Domain = origDomain
-		e.ctx.Config.DomainAliases = origAliases
-		e.ctx.Config.WebRoot = origWebRoot
-		e.ctx.Config.ProjectType = origType
-
-		if err != nil {
+		if err := e.deployClient(e.ctx.Config.ClientDomain, e.ctx.Config.ClientDomainAliases, e.ctx.Config.ClientWebRoot); err != nil {
 			return fmt.Errorf("client deployment failed: %w", err)
 		}
 	}
@@ -349,10 +340,13 @@ func (e *Executor) deployDocker() error {
 
 /*
 deployClient builds a frontend-only project, sets up nginx/SSL if a
-domain is configured, then deploys the build to the web root. On
-deploy failure it attempts to restore the pre-deploy backup.
+domain is configured, then deploys the build to the given web root.
+On deploy failure it attempts to restore the pre-deploy backup.
+Domain, aliases, and web root are explicit parameters because the
+Docker and fullstack paths deploy the client to a different site
+than the repo's primary config.
 */
-func (e *Executor) deployClient() error {
+func (e *Executor) deployClient(domain string, aliases []string, webRoot string) error {
 	e.log.State(types.StateDeployingClient)
 	e.log.Info("Deploying client application...")
 
@@ -363,37 +357,13 @@ func (e *Executor) deployClient() error {
 
 	e.log.Infof("Client directory: %s", clientDir)
 
-	clientBuilder := build.NewClientBuilder(clientDir, e.ctx.Config.WebRoot, e.cfg.BackupDir, e.log)
+	clientBuilder := build.NewClientBuilder(clientDir, webRoot, e.cfg.BackupDir, e.log)
 	buildResult, err := clientBuilder.Build()
 	if err != nil {
 		return fmt.Errorf("client build failed: %w", err)
 	}
 
-	if e.ctx.Config.Domain != "" {
-		nginxMgr := nginx.New(
-			e.ctx.Config.Domain,
-			e.ctx.Config.DomainAliases,
-			e.ctx.Config.WebRoot,
-			e.ctx.Config.ProjectType,
-			e.ctx.Config.Port,
-			e.log,
-		)
-
-		if err := nginxMgr.Setup(); err != nil {
-			e.log.Warningf("Nginx setup failed: %v", err)
-		}
-
-		sslMgr := ssl.New(
-			e.ctx.Config.Domain,
-			e.ctx.Config.DomainAliases,
-			e.cfg.SSLEmail,
-			e.log,
-		)
-
-		if err := sslMgr.Setup(); err != nil {
-			e.log.Warningf("SSL setup failed: %v", err)
-		}
-	}
+	e.setupEdge(domain, aliases, webRoot, types.ProjectTypeClient, e.ctx.Config.Port)
 
 	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
 	if err != nil {
@@ -413,9 +383,10 @@ func (e *Executor) deployClient() error {
 deployServer builds a backend-only project, sets up nginx/SSL if
 configured, deploys via PM2, and runs a health check. Build
 failures reset git; deploy or health-check failures trigger a full
-server rollback.
+server rollback. Domain and aliases are explicit parameters because
+the fullstack path serves the API from its own subdomain.
 */
-func (e *Executor) deployServer() error {
+func (e *Executor) deployServer(domain string, aliases []string) error {
 	e.log.State(types.StateDeployingServer)
 	e.log.Info("Deploying server API...")
 
@@ -437,52 +408,17 @@ func (e *Executor) deployServer() error {
 		return fmt.Errorf("server build failed: %w", err)
 	}
 
-	if e.ctx.Config.Domain != "" && e.ctx.Config.Port > 0 {
-		nginxMgr := nginx.New(
-			e.ctx.Config.Domain,
-			e.ctx.Config.DomainAliases,
-			"",
-			e.ctx.Config.ProjectType,
-			e.ctx.Config.Port,
-			e.log,
-		)
-
-		if err := nginxMgr.Setup(); err != nil {
-			e.log.Warningf("Nginx setup failed: %v", err)
-		}
-
-		sslMgr := ssl.New(
-			e.ctx.Config.Domain,
-			e.ctx.Config.DomainAliases,
-			e.cfg.SSLEmail,
-			e.log,
-		)
-
-		if err := sslMgr.Setup(); err != nil {
-			e.log.Warningf("SSL setup failed: %v", err)
-		}
-	}
+	e.setupEdge(domain, aliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port)
 
 	if err := serverBuilder.Deploy(serverDir); err != nil {
-		e.rollbackServer(serverBuilder, serverDir)
+		e.rollbackServer(serverBuilder, serverDir, domain)
 		return fmt.Errorf("server deployment failed: %w", err)
 	}
 
 	e.log.Infof("Server build completed in %v", buildResult.Duration)
 
-	healthChecker := health.New(
-		e.ctx.Config.Domain,
-		e.ctx.Config.Port,
-		e.ctx.RepoName,
-		e.ctx.Config.ProjectType,
-		e.ctx.Config.HealthCheckURL,
-		e.ctx.Config.HealthCheckTimeout,
-		e.log,
-	)
-
-	if err := healthChecker.Check(); err != nil {
-		e.log.Errorf("Health check failed: %v", err)
-		e.rollbackServer(serverBuilder, serverDir)
+	if err := e.serverHealthCheck(domain); err != nil {
+		e.rollbackServer(serverBuilder, serverDir, domain)
 		return fmt.Errorf("deployment health check failed: %w", err)
 	}
 
@@ -490,35 +426,26 @@ func (e *Executor) deployServer() error {
 }
 
 /*
-deployFullstack deploys the server first, temporarily pointing its
-domain at the "api." subdomain, then restores the original domain
-and deploys the client.
+deployFullstack deploys the server on its API domain (ServerDomain,
+defaulting to "api." + Domain), then deploys the client on the
+primary domain.
 */
 func (e *Executor) deployFullstack() error {
 	e.log.State(types.StateDeployingFull)
 	e.log.Info("Deploying fullstack application...")
 
-	e.log.Info("Step 1/2: Deploying server...")
-
-	originalDomain := e.ctx.Config.Domain
-	originalAliases := e.ctx.Config.DomainAliases
-
-	if e.ctx.Config.Domain != "" {
-		e.ctx.Config.Domain = "api." + e.ctx.Config.Domain
-		e.ctx.Config.DomainAliases = []string{}
+	serverDomain := e.ctx.Config.ServerDomain
+	if serverDomain == "" && e.ctx.Config.Domain != "" {
+		serverDomain = "api." + e.ctx.Config.Domain
 	}
 
-	if err := e.deployServer(); err != nil {
-		e.ctx.Config.Domain = originalDomain
-		e.ctx.Config.DomainAliases = originalAliases
+	e.log.Info("Step 1/2: Deploying server...")
+	if err := e.deployServer(serverDomain, nil); err != nil {
 		return err
 	}
 
-	e.ctx.Config.Domain = originalDomain
-	e.ctx.Config.DomainAliases = originalAliases
-
 	e.log.Info("Step 2/2: Deploying client...")
-	if err := e.deployClient(); err != nil {
+	if err := e.deployClient(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, e.ctx.Config.WebRoot); err != nil {
 		return err
 	}
 

@@ -13,7 +13,7 @@ import (
 
 const nginxTimeout = 1 * time.Minute
 
-type NginxManager struct {
+type Site struct {
 	domain        string
 	domainAliases []string
 	webRoot       string
@@ -26,9 +26,9 @@ type NginxManager struct {
 // Construction
 // ============================================================
 
-/* New creates an NginxManager for the given site. */
-func New(domain string, domainAliases []string, webRoot string, projectType types.ProjectType, port int, log *logger.Logger) *NginxManager {
-	return &NginxManager{
+/* New creates a Site for the given domain. */
+func New(domain string, domainAliases []string, webRoot string, projectType types.ProjectType, port int, log *logger.Logger) *Site {
+	return &Site{
 		domain:        domain,
 		domainAliases: domainAliases,
 		webRoot:       webRoot,
@@ -43,17 +43,17 @@ func New(domain string, domainAliases []string, webRoot string, projectType type
 // ============================================================
 
 /* availablePath returns the site's config path in sites-available. */
-func (n *NginxManager) availablePath() string {
+func (n *Site) availablePath() string {
 	return fmt.Sprintf("/etc/nginx/sites-available/%s", n.domain)
 }
 
 /* enabledPath returns the site's symlink path in sites-enabled. */
-func (n *NginxManager) enabledPath() string {
+func (n *Site) enabledPath() string {
 	return fmt.Sprintf("/etc/nginx/sites-enabled/%s", n.domain)
 }
 
 /* ConfigExists reports whether an nginx config already exists for the domain. */
-func (n *NginxManager) ConfigExists() bool {
+func (n *Site) ConfigExists() bool {
 	_, err := os.Stat(n.availablePath())
 	return err == nil
 }
@@ -65,7 +65,7 @@ template for everything else. No-ops if a config already exists.
 Returns whether this call created the config, so a failed setup can
 clean up exactly what it made.
 */
-func (n *NginxManager) GenerateConfig() (bool, error) {
+func (n *Site) GenerateConfig() (bool, error) {
 	if n.ConfigExists() {
 		n.log.Warningf("Nginx config for %s already exists — current Port/WebRoot/alias settings are NOT applied; delete %s to regenerate", n.domain, n.availablePath())
 		return false, nil
@@ -101,7 +101,7 @@ EnableSite symlinks the site into sites-enabled, if not already
 enabled. Returns whether this call created the symlink, so a failed
 setup can clean up exactly what it made.
 */
-func (n *NginxManager) EnableSite() (bool, error) {
+func (n *Site) EnableSite() (bool, error) {
 	if _, err := os.Stat(n.enabledPath()); err == nil {
 		n.log.Info("Site already enabled")
 		return false, nil
@@ -118,7 +118,7 @@ func (n *NginxManager) EnableSite() (bool, error) {
 }
 
 /* TestConfig validates the nginx configuration via `nginx -t`. */
-func (n *NginxManager) TestConfig() error {
+func (n *Site) TestConfig() error {
 	n.log.Info("Testing nginx configuration...")
 
 	output, err := run.Cmd(nginxTimeout, "", "sudo", "nginx", "-t")
@@ -131,7 +131,7 @@ func (n *NginxManager) TestConfig() error {
 }
 
 /* Reload reloads the nginx service to pick up config changes. */
-func (n *NginxManager) Reload() error {
+func (n *Site) Reload() error {
 	n.log.Info("Reloading nginx...")
 
 	if _, err := run.Cmd(nginxTimeout, "", "sudo", "systemctl", "reload", "nginx"); err != nil {
@@ -148,7 +148,7 @@ symlink) after a failed setup, so a broken config never stays in
 sites-available/sites-enabled to poison every future deploy of every
 project. Pre-existing files are never touched.
 */
-func (n *NginxManager) removeCreated(createdConfig, enabledSite bool) {
+func (n *Site) removeCreated(createdConfig, enabledSite bool) {
 	if enabledSite {
 		if _, err := run.Cmd(nginxTimeout, "", "sudo", "rm", "-f", n.enabledPath()); err != nil {
 			n.log.Errorf("Failed to remove broken nginx symlink %s — remove it manually or all nginx reloads will fail: %v", n.enabledPath(), err)
@@ -175,7 +175,7 @@ Setup runs the full nginx setup sequence for a site: generate the
 config, enable it, test it, then reload nginx. If the test fails,
 anything this run created is removed before returning the error.
 */
-func (n *NginxManager) Setup() error {
+func (n *Site) Setup() error {
 	createdConfig, err := n.GenerateConfig()
 	if err != nil {
 		return err

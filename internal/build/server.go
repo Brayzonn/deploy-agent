@@ -54,18 +54,13 @@ func (s *ServerBuilder) Build() (*types.BuildOutput, error) {
 
 	if s.projectType == types.ProjectTypeAPIJS {
 		s.log.Info("JavaScript project - no build step required")
-		return &types.BuildOutput{
-			Success:   true,
-			OutputDir: s.builder.workDir,
-			Duration:  0,
-			Error:     nil,
-		}, nil
+		return &types.BuildOutput{OutputDir: s.builder.workDir}, nil
 	}
 
 	if s.projectType == types.ProjectTypeAPITS {
 		result, err := s.builder.RunBuild()
 		if err != nil {
-			return result, err
+			return nil, err
 		}
 
 		if err := s.validateEntryPoint(result.OutputDir); err != nil {

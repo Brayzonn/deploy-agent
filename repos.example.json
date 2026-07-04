@@ -1,0 +1,100 @@
+{
+  "MINES": {
+    "name": "MINES",
+    "repo_dir": "/home/zoney/MINES",
+    "project_type": "DOCKER",
+    "client_dir": "client",
+    "server_dir": "server",
+    "domain": "api.mines.zoneyhub.com",
+    "port": 4600,
+    "use_docker": true,
+    "docker_compose_file": "docker-compose.prod.yml",
+    "docker_env_file": ".env.production",
+    "requires_migrations": true,
+    "migration_command": "npm run db:migrate",
+    "migration_service": "api",
+    "infra_services": [
+      "postgres",
+      "redis"
+    ],
+    "health_check_url": "http://localhost:4600/api/v1/health",
+    "health_check_timeout": 30,
+    "client_domain": "mines.zoneyhub.com",
+    "client_web_root": "/var/www/html/MINES"
+  },
+  "NotifyKit-Docs": {
+    "name": "NotifyKit-Docs",
+    "repo_dir": "/home/zoney/NotifyKit-Docs",
+    "web_root": "/var/www/html/NotifyKit-Docs",
+    "project_type": "CLIENT",
+    "client_dir": ".",
+    "domain": "docs.notifykit.dev"
+  },
+  "URL-Shortener-App": {
+    "name": "URL-Shortener-App",
+    "repo_dir": "/home/zoney/URL-Shortener-App",
+    "web_root": "/var/www/html/URL-Shortener-App",
+    "project_type": "API_JS",
+    "client_dir": "client",
+    "server_dir": "server",
+    "server_entry": "app.js"
+  },
+  "my-music-stats": {
+    "name": "my-music-stats",
+    "repo_dir": "/home/zoney/my-music-stats",
+    "web_root": "/var/www/html/weeklies",
+    "project_type": "API_TS",
+    "full_stack": true,
+    "client_dir": "client",
+    "server_dir": "server",
+    "server_entry": "src/main.js",
+    "pm2_ecosystem": "ecosystem.config.js"
+  },
+  "notifykit": {
+    "name": "notifykit",
+    "repo_dir": "/home/zoney/notifykit",
+    "project_type": "DOCKER",
+    "domain": "api.notifykit.dev",
+    "port": 5932,
+    "use_docker": true,
+    "docker_compose_file": "docker-compose.prod.yml",
+    "docker_env_file": ".env.production",
+    "requires_migrations": true,
+    "migration_command": "npx prisma migrate deploy",
+    "migration_service": "api",
+    "infra_services": [
+      "postgres",
+      "redis"
+    ],
+    "health_check_url": "http://localhost:5932/api/v1/health",
+    "health_check_timeout": 30
+  },
+  "notifykit-admin": {
+    "name": "notifykit-admin",
+    "repo_dir": "/home/zoney/notifykit-admin",
+    "web_root": "/var/www/html/notifykit-admin",
+    "project_type": "CLIENT",
+    "client_dir": ".",
+    "domain": "admin.notifykit.dev"
+  },
+  "notifykit-web": {
+    "name": "notifykit-web",
+    "repo_dir": "/home/zoney/notifykit-web",
+    "web_root": "/var/www/html/notifykit-web",
+    "project_type": "CLIENT",
+    "client_dir": "client",
+    "domain": "notifykit.dev",
+    "domain_aliases": [
+      "www.notifykit.dev"
+    ]
+  },
+  "zoneyhub": {
+    "name": "zoneyhub",
+    "repo_dir": "/home/zoney/zoneyhub",
+    "web_root": "/var/www/html/zoneyhub",
+    "project_type": "CLIENT",
+    "client_dir": "client",
+    "server_dir": "server",
+    "server_entry": "app.js"
+  }
+}

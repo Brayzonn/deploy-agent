@@ -90,6 +90,94 @@ func TestBackupWebRootFailure(t *testing.T) {
 	}
 }
 
+/* readFile returns the content of path, failing the test if it can't be read. */
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+/*
+TestSwapInReplacesWebRoot checks the stage-and-swap flow: the new
+content ends up in the web root, the old content is gone, and no
+.new/.old siblings are left behind.
+*/
+func TestSwapInReplacesWebRoot(t *testing.T) {
+	webRoot := filepath.Join(t.TempDir(), "site")
+	c := newTestClientBuilder(t, webRoot)
+
+	os.MkdirAll(webRoot, 0755)
+	os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("old"), 0644)
+
+	buildOutput := filepath.Join(t.TempDir(), "dist")
+	os.MkdirAll(buildOutput, 0755)
+	os.WriteFile(filepath.Join(buildOutput, "index.html"), []byte("new"), 0644)
+
+	staging, err := c.stage(buildOutput)
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+	if got := readFile(t, filepath.Join(webRoot, "index.html")); got != "old" {
+		t.Fatalf("staging must not touch the web root, but it serves %q", got)
+	}
+
+	disturbed, err := c.swapIn(staging)
+	if err != nil {
+		t.Fatalf("swap failed (disturbed=%t): %v", disturbed, err)
+	}
+	if got := readFile(t, filepath.Join(webRoot, "index.html")); got != "new" {
+		t.Fatalf("web root serves %q after swap, want %q", got, "new")
+	}
+	for _, leftover := range []string{webRoot + ".new", webRoot + ".old"} {
+		if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+			t.Errorf("swap left %s behind", leftover)
+		}
+	}
+}
+
+/* TestSwapInFirstDeploy checks the swap works when no web root exists yet. */
+func TestSwapInFirstDeploy(t *testing.T) {
+	webRoot := filepath.Join(t.TempDir(), "site")
+	c := newTestClientBuilder(t, webRoot)
+
+	buildOutput := filepath.Join(t.TempDir(), "dist")
+	os.MkdirAll(buildOutput, 0755)
+	os.WriteFile(filepath.Join(buildOutput, "index.html"), []byte("new"), 0644)
+
+	staging, err := c.stage(buildOutput)
+	if err != nil {
+		t.Fatalf("stage failed: %v", err)
+	}
+	if disturbed, err := c.swapIn(staging); err != nil {
+		t.Fatalf("swap failed (disturbed=%t): %v", disturbed, err)
+	}
+	if got := readFile(t, filepath.Join(webRoot, "index.html")); got != "new" {
+		t.Fatalf("web root serves %q after first deploy, want %q", got, "new")
+	}
+}
+
+/* TestStageFailureLeavesWebRootUntouched checks a failed staging copy never disturbs the serving site. */
+func TestStageFailureLeavesWebRootUntouched(t *testing.T) {
+	webRoot := filepath.Join(t.TempDir(), "site")
+	c := newTestClientBuilder(t, webRoot)
+
+	os.MkdirAll(webRoot, 0755)
+	os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("old"), 0644)
+
+	if _, err := c.stage(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+		t.Fatal("staging a missing source succeeded, want error")
+	}
+	if got := readFile(t, filepath.Join(webRoot, "index.html")); got != "old" {
+		t.Fatalf("web root serves %q after failed staging, want untouched %q", got, "old")
+	}
+	if _, err := os.Stat(webRoot + ".new"); !os.IsNotExist(err) {
+		t.Error("failed staging left the .new directory behind")
+	}
+}
+
 /* TestValidateWebRoot checks the /var/www/html fence rejects escapes and accepts real site roots. */
 func TestValidateWebRoot(t *testing.T) {
 	cases := []struct {
