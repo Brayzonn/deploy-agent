@@ -318,10 +318,18 @@ func (e *Executor) deployDocker() error {
 		)
 
 		if err := healthChecker.Check(); err != nil {
-			e.log.Warningf("HTTP health check failed: %v", err)
-		} else {
-			e.log.Success("HTTP health check passed")
+			logs, _ := dockerBuilder.GetLogs("", 50)
+			e.log.Error("Container logs:")
+			e.log.Error(logs)
+
+			e.log.Warningf("HTTP health check failed: %v — rolling back", err)
+			if migrationsRan {
+				e.log.Warning("Database schema was already migrated for the new version — rolled-back containers will run OLD code against the NEW schema; this only works if the migrations were backward-compatible")
+			}
+			dockerBuilder.Rollback()
+			return fmt.Errorf("docker deployment failed health check: %w", err)
 		}
+		e.log.Success("HTTP health check passed")
 	}
 
 	dockerBuilder.CleanupOnSuccess()
