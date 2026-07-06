@@ -55,6 +55,7 @@ func (s *Cert) RequestCertificate() error {
 		"--non-interactive",
 		"--agree-tos",
 		"--keep-until-expiring",
+		"--redirect",
 	}
 
 	if s.email != "" {
