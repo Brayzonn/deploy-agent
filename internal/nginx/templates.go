@@ -22,6 +22,7 @@ func (n *Site) generateClientConfig() string {
 
 	return fmt.Sprintf(`server {
     listen 80;
+    listen [::]:80;
     server_name %s;
     root %s;
     index index.html;
@@ -61,6 +62,7 @@ func (n *Site) generateAPIConfig() string {
 
 	return fmt.Sprintf(`server {
     listen 80;
+    listen [::]:80;
     server_name %s;
 
     location / {
