@@ -103,6 +103,10 @@ func (e *Executor) Execute() error {
 		return fmt.Errorf("git sync failed: %w", err)
 	}
 
+	if err := stageEnvOverlay(e.ctx.Config.Name, e.ctx.Config.RepoDir, e.log); err != nil {
+		return fmt.Errorf("env overlay staging failed: %w", err)
+	}
+
 	if err := e.deploy(); err != nil {
 		return err
 	}

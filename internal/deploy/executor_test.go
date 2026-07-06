@@ -202,6 +202,43 @@ func TestDeployRoutesDockerProjects(t *testing.T) {
 	}
 }
 
+/* TestExecuteStagesEnvOverlay checks overlay files land in the checkout after sync, before the build runs. */
+func TestExecuteStagesEnvOverlay(t *testing.T) {
+	fake := &fakeCommands{head: oldCommit, failComposeBuild: true}
+	e := newTestExecutor(t, &types.RepoConfig{
+		ProjectType:       types.ProjectTypeAPITS,
+		UseDocker:         true,
+		DockerComposeFile: "docker-compose.yml",
+	}, fake, true)
+
+	composePath := filepath.Join(e.ctx.Config.RepoDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte("services: {}\n"), 0644); err != nil {
+		t.Fatalf("could not write compose file: %v", err)
+	}
+
+	writeOverlay(t, "test-app", map[string]string{
+		".env.production": "SECRET=overlay",
+		"client/.env":     "VITE_API=overlay",
+	})
+
+	if err := e.Execute(); err == nil {
+		t.Fatal("expected docker build failure")
+	}
+
+	for rel, want := range map[string]string{
+		".env.production": "SECRET=overlay",
+		"client/.env":     "VITE_API=overlay",
+	} {
+		data, err := os.ReadFile(filepath.Join(e.ctx.Config.RepoDir, rel))
+		if err != nil {
+			t.Fatalf("overlay file %s was not staged into the checkout: %v", rel, err)
+		}
+		if string(data) != want {
+			t.Errorf("staged %s = %q, want overlay copy %q", rel, data, want)
+		}
+	}
+}
+
 /* TestDeployRoutesClientProjects checks a CLIENT project builds npm in the client dir. */
 func TestDeployRoutesClientProjects(t *testing.T) {
 	fake := &fakeCommands{head: oldCommit, failNpm: true}

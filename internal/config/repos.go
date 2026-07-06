@@ -131,3 +131,4 @@ func validateRepoConfig(repoName string, config *types.RepoConfig) error {
 
 	return nil
 }
+

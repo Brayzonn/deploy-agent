@@ -260,7 +260,27 @@ Adding or changing a project is just editing this file — no recompiling, no re
 }
 ```
 
-### 4. Setup GitHub Webhook
+### 4. Stage Env Files (Optional)
+
+Env files (e.g. `.env.production`) are gitignored, so a fresh clone never contains them. Instead of hand-placing them into the checkout, keep the master copies outside the repo — same idea as `repos.json`. Each repo can have an **overlay directory** at `/etc/deploy-agent/env/<repo>/` that mirrors the repo's layout, holding only the files git doesn't have:
+
+```bash
+# env file at the repo root (server_dir "."):
+sudo mkdir -p /etc/deploy-agent/env/your-docker-app
+sudo cp .env.production /etc/deploy-agent/env/your-docker-app/.env.production
+
+# repo that builds from a server subdirectory (server_dir "server"):
+sudo mkdir -p /etc/deploy-agent/env/your-fullstack-app/server
+sudo cp server/.env.production /etc/deploy-agent/env/your-fullstack-app/server/.env.production
+
+sudo chmod -R go-rwx /etc/deploy-agent/env
+```
+
+The overlay path always mirrors where the file sits **inside the repo**. Docker builds run in `repo_dir/server_dir` and expect the env file there — so a repo with `"server_dir": "server"` needs its env file at `<repo>/server/.env.production` in the overlay, not at the overlay root. Client env files (build-time vars) likewise go at the client's path, e.g. `<repo>/client/.env`.
+
+On every deploy — all project types, not just Docker — the agent copies each overlay file into the checkout at the same relative path (mode 600), overwriting whatever is there. Editing a master copy rolls out on the next deploy, and fresh clones just work. Repos without an overlay directory are untouched: an *absent* env file never fails a deploy (apps that require one should fail their own startup, which the health check turns into a rollback), but an overlay file that exists and can't be copied does. Symlinks in the overlay are skipped. Override the parent directory with the `DEPLOY_AGENT_ENV_DIR` env var.
+
+### 5. Setup GitHub Webhook
 
 1. **Go to your GitHub repository** → Settings → Webhooks → Add webhook
 
@@ -275,7 +295,7 @@ Adding or changing a project is just editing this file — no recompiling, no re
 
 3. **Save webhook**
 
-### 5. Push & Deploy
+### 6. Push & Deploy
 
 ```bash
 git push origin main
@@ -464,6 +484,7 @@ Optional (set in webhook server .env):
 SSL_EMAIL=your-email@example.com            # Let's Encrypt notifications
 SLACK_WEBHOOK_URL=https://hooks.slack.com/… # failure alerts (off when unset)
 DEPLOY_AGENT_REPOS_FILE=/path/to/repos.json # overrides /etc/deploy-agent/repos.json
+DEPLOY_AGENT_ENV_DIR=/path/to/env           # overrides /etc/deploy-agent/env (env file overlays)
 ```
 
 ---
@@ -1056,6 +1077,7 @@ sudo tail -f /var/log/nginx/access.log
 ### Environment Variables
 
 - Never commit `.env.production` to git
+- Stage env files in the `/etc/deploy-agent/env/<repo>/` overlay so fresh clones deploy without manual copying
 - Use strong passwords for production databases
 - Rotate secrets regularly
 - Use different credentials for dev and prod
