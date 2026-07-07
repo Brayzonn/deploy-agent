@@ -31,7 +31,7 @@ func markedConfig(body string) string {
 /* bodyFor renders the desired config body for the given settings. */
 func bodyFor(t *testing.T, aliases []string, webRoot string, pt types.ProjectType, port int) string {
 	t.Helper()
-	body, err := New("example.com", aliases, webRoot, pt, port, "", nil).desiredConfig()
+	body, err := New("example.com", aliases, webRoot, pt, port, 0, "", nil).desiredConfig()
 	if err != nil {
 		t.Fatalf("desiredConfig: %v", err)
 	}

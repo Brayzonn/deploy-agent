@@ -204,7 +204,7 @@ config is fixable without redeploying. No-ops when no domain is
 configured, or when a proxied (non-client) site has no port to proxy
 to.
 */
-func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt types.ProjectType, port int) {
+func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt types.ProjectType, port int, nginxMaxUpload int) {
 	if domain == "" {
 		return
 	}
@@ -239,7 +239,7 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 		e.log.Warningf("Default TLS catch-all setup failed: %v", err)
 	}
 
-	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, e.cfg.BackupDir, e.log)
+	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, nginxMaxUpload, e.cfg.BackupDir, e.log)
 	res, err := nginxMgr.Setup()
 	if err != nil {
 		// Setup restored or cleaned up its own changes before returning,
@@ -368,7 +368,7 @@ func (e *Executor) deployDocker() error {
 		return fmt.Errorf("docker deployment failed: %w", err)
 	}
 
-	e.setupEdge(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port)
+	e.setupEdge(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB)
 
 	if e.ctx.Config.HealthCheckURL != "" {
 		healthChecker := health.New(
@@ -435,7 +435,7 @@ func (e *Executor) deployClient(domain string, aliases []string, webRoot string)
 		return fmt.Errorf("client build failed: %w", err)
 	}
 
-	e.setupEdge(domain, aliases, webRoot, types.ProjectTypeClient, e.ctx.Config.Port)
+	e.setupEdge(domain, aliases, webRoot, types.ProjectTypeClient, e.ctx.Config.Port, 0)
 
 	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
 	if err != nil {
@@ -480,7 +480,7 @@ func (e *Executor) deployServer(domain string, aliases []string) error {
 		return fmt.Errorf("server build failed: %w", err)
 	}
 
-	e.setupEdge(domain, aliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port)
+	e.setupEdge(domain, aliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB)
 
 	if err := serverBuilder.Deploy(serverDir); err != nil {
 		e.rollbackServer(serverBuilder, serverDir, domain)

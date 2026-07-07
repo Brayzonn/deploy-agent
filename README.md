@@ -198,6 +198,7 @@ Deploys the backend on `api.myapp.com` (override with `server_domain`) and the f
 | `domain_aliases`        | []string | Additional domains (same config + certificate)           | Optional              |
 | `server_domain`         | string   | Fullstack API domain (default `api.` + `domain`)         | Optional              |
 | `port`                  | int      | Port the app listens on                                  | For backends          |
+| `nginx_max_upload_mb`   | int      | nginx `client_max_body_size` for the API/Docker server block (nginx's own 1MB default applies when unset) | Optional |
 | `health_check_url`      | string   | URL polled after deploy until it returns 200             | Optional              |
 | `health_check_timeout`  | int      | Health check deadline in seconds (default 30)            | Optional              |
 | `full_stack`            | bool     | Deploy backend and frontend from one repo                | Optional              |

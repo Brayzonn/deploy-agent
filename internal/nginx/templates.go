@@ -60,12 +60,17 @@ func (n *Site) generateAPIConfig() string {
 		serverNames = n.domain + " " + strings.Join(n.domainAliases, " ")
 	}
 
+	maxUpload := ""
+	if n.nginxMaxUpload > 0 {
+		maxUpload = fmt.Sprintf("    client_max_body_size %dm;\n\n", n.nginxMaxUpload)
+	}
+
 	return fmt.Sprintf(`server {
     listen 80;
     listen [::]:80;
     server_name %s;
 
-    location / {
+%s    location / {
         proxy_pass http://localhost:%d;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -76,5 +81,5 @@ func (n *Site) generateAPIConfig() string {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
     }
-}`, serverNames, n.port)
+}`, serverNames, maxUpload, n.port)
 }

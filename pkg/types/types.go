@@ -33,20 +33,21 @@ fields per the json tags below), falling back to the compiled-in
 defaults — see internal/config/repos.go.
 */
 type RepoConfig struct {
-	Name          string      `json:"name,omitempty"`
-	DeployBranch  string      `json:"deploy_branch,omitempty"`
-	RepoDir       string      `json:"repo_dir,omitempty"`
-	WebRoot       string      `json:"web_root,omitempty"`
-	ProjectType   ProjectType `json:"project_type,omitempty"`
-	FullStack     bool        `json:"full_stack,omitempty"`
-	ClientDir     string      `json:"client_dir,omitempty"`
-	ServerDir     string      `json:"server_dir,omitempty"`
-	ServerEntry   string      `json:"server_entry,omitempty"`
-	PM2Ecosystem  string      `json:"pm2_ecosystem,omitempty"`
-	Domain        string      `json:"domain,omitempty"`
-	DomainAliases []string    `json:"domain_aliases,omitempty"`
-	ServerDomain  string      `json:"server_domain,omitempty"` // fullstack API domain; defaults to "api." + Domain
-	Port          int         `json:"port,omitempty"`
+	Name             string      `json:"name,omitempty"`
+	DeployBranch     string      `json:"deploy_branch,omitempty"`
+	RepoDir          string      `json:"repo_dir,omitempty"`
+	WebRoot          string      `json:"web_root,omitempty"`
+	ProjectType      ProjectType `json:"project_type,omitempty"`
+	FullStack        bool        `json:"full_stack,omitempty"`
+	ClientDir        string      `json:"client_dir,omitempty"`
+	ServerDir        string      `json:"server_dir,omitempty"`
+	ServerEntry      string      `json:"server_entry,omitempty"`
+	PM2Ecosystem     string      `json:"pm2_ecosystem,omitempty"`
+	Domain           string      `json:"domain,omitempty"`
+	DomainAliases    []string    `json:"domain_aliases,omitempty"`
+	ServerDomain     string      `json:"server_domain,omitempty"` // fullstack API domain; defaults to "api." + Domain
+	Port             int         `json:"port,omitempty"`
+	NginxMaxUploadMB int         `json:"nginx_max_upload_mb,omitempty"` // client_max_body_size for the API/Docker nginx server block; nginx's own default (1m) applies when unset
 
 	UseDocker          bool     `json:"use_docker,omitempty"`
 	DockerComposeFile  string   `json:"docker_compose_file,omitempty"`
