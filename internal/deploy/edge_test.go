@@ -185,6 +185,22 @@ func (s *edgeStub) called(substr string) bool {
 	return false
 }
 
+/*
+TestSetupEdgeEnsuresDefaultTLS checks the edge step creates the
+default TLS catch-all (create-once, before the site's own setup) so an
+unmatched SNI is refused instead of served another site's cert.
+*/
+func TestSetupEdgeEnsuresDefaultTLS(t *testing.T) {
+	stub := &edgeStub{}
+	e := newEdgeExecutor(t, stub, false)
+
+	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000)
+
+	if !stub.called("sites-available/default-tls") {
+		t.Fatalf("setupEdge should create the default TLS catch-all, ran: %v", stub.calls)
+	}
+}
+
 // ============================================================
 // Edge lock serialization
 // ============================================================

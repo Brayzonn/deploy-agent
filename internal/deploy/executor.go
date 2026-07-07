@@ -229,6 +229,16 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 	}
 	defer edgeLock.Release()
 
+	/*
+		Create-once insurance: a domain with a DNS record pointing here but
+		no matching vhost gets a refused TLS handshake instead of another
+		site's certificate. Warn-only — the site's own edge setup proceeds
+		regardless.
+	*/
+	if err := nginx.EnsureDefaultServer(e.log); err != nil {
+		e.log.Warningf("Default TLS catch-all setup failed: %v", err)
+	}
+
 	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, e.cfg.BackupDir, e.log)
 	res, err := nginxMgr.Setup()
 	if err != nil {
