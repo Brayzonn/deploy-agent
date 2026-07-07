@@ -51,10 +51,15 @@ func run() int {
 
 	executor := deploy.New(ctx, cfg, log)
 
+	// The start notification doubles as a per-deploy health check of
+	// the alert channel — see notify.NotifyStart.
+	slack := notify.NewSlack(cfg.SlackWebhookURL, log)
+	slack.NotifyStart(ctx)
+
 	if err := executor.Execute(); err != nil {
 		log.State(types.StateFailed)
 		log.Errorf("Deployment failed: %v", err)
-		notify.NewSlack(cfg.SlackWebhookURL, log).NotifyFailure(ctx, err)
+		slack.NotifyFailure(ctx, err)
 		return 1
 	}
 
