@@ -1,6 +1,7 @@
 package ssl
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,16 @@ import (
 )
 
 const certbotTimeout = 5 * time.Minute
+
+/*
+ErrRateLimited signals that certbot hit a Let's Encrypt rate limit, so
+no certificate was issued or renewed this run. It is returned rather
+than swallowed so the caller can decide what it means: on a fresh site,
+carry on HTTP-only; on a regenerated config it means certbot did NOT
+re-add the 443 block, so the site must be restored to its pre-deploy
+SSL state instead of being left HTTPS-down.
+*/
+var ErrRateLimited = errors.New("Let's Encrypt rate limit reached")
 
 type Cert struct {
 	domain        string
@@ -37,9 +48,10 @@ func New(domain string, domainAliases []string, email string, log *logger.Logger
 // ============================================================
 
 /*
-RequestCertificate runs certbot for the domain and its aliases. A
-Let's Encrypt rate-limit response and an "already valid" response
-are both treated as success rather than failure.
+RequestCertificate runs certbot for the domain and its aliases. An
+"already valid" response is treated as success; a Let's Encrypt
+rate-limit response returns ErrRateLimited so the caller can decide
+whether that is safe to carry on from.
 */
 func (s *Cert) RequestCertificate() error {
 	s.log.Info("Setting up SSL certificate...")
@@ -70,7 +82,7 @@ func (s *Cert) RequestCertificate() error {
 	if err != nil {
 		if strings.Contains(output, "too many certificates") {
 			s.log.Warning("Let's Encrypt rate limit reached")
-			return nil
+			return ErrRateLimited
 		}
 		return fmt.Errorf("certbot failed: %w\nOutput: %s", err, output)
 	}

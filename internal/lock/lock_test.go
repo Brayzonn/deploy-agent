@@ -91,3 +91,39 @@ func TestAcquireSerializes(t *testing.T) {
 		t.Fatal("lock still held after all releases")
 	}
 }
+
+/*
+TestAcquireEdgeIsGlobal checks the edge lock lives in one fixed file
+(nginx-edge.lock, not per-repo — what makes it global), that holding it
+doesn't contend with any per-repo deploy lock, and that Release frees
+it.
+*/
+func TestAcquireEdgeIsGlobal(t *testing.T) {
+	stateDir := t.TempDir()
+	log, err := logger.New("test", filepath.Join(stateDir, "logs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	edge, err := AcquireEdge(stateDir, log)
+	if err != nil {
+		t.Fatalf("edge acquire failed: %v", err)
+	}
+
+	edgePath := filepath.Join(stateDir, "nginx-edge.lock")
+	if tryFlock(t, edgePath) {
+		t.Fatal("edge lock is not held: second flock on nginx-edge.lock succeeded")
+	}
+
+	repo, err := Acquire(stateDir, "myrepo", log)
+	if err != nil {
+		t.Fatalf("per-repo lock contended with the edge lock: %v", err)
+	}
+	repo.Release()
+
+	edge.Release()
+	if !tryFlock(t, edgePath) {
+		t.Fatal("edge lock still held after release")
+	}
+}

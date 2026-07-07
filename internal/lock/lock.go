@@ -22,29 +22,56 @@ type DeployLock struct {
 Acquire takes an exclusive flock on <stateDir>/deploy-<repo>.lock so
 only one deployment per repo runs at a time. If another deployment
 holds the lock, it logs and blocks until that one finishes, so rapid
-successive pushes deploy serially with the last one winning. The
-kernel releases the lock when the process exits, so a crashed deploy
-never leaves a stale lock behind.
+successive pushes deploy serially with the last one winning.
 */
 func Acquire(stateDir, repoName string, log *logger.Logger) (*DeployLock, error) {
+	return acquire(stateDir,
+		fmt.Sprintf("deploy-%s.lock", repoName),
+		fmt.Sprintf("Another deployment for %s is in progress — waiting for it to finish...", repoName),
+		log)
+}
+
+/*
+AcquireEdge takes an exclusive flock on <stateDir>/nginx-edge.lock —
+one fixed file for the whole server, deliberately NOT per-repo. The
+nginx config tree, `nginx -t`, reload, and certbot are global server
+state, so the executor holds this lock across its entire edge step:
+deploys of different repos serialize their nginx/SSL work behind it
+while the rest of their pipelines still run concurrently under their
+own per-repo locks.
+*/
+func AcquireEdge(stateDir string, log *logger.Logger) (*DeployLock, error) {
+	return acquire(stateDir,
+		"nginx-edge.lock",
+		"Another deployment is updating nginx/SSL — waiting for it to finish...",
+		log)
+}
+
+/*
+acquire opens <stateDir>/<name> and takes an exclusive flock on it,
+logging waitMsg and blocking if another process already holds it. The
+kernel releases the lock when the process exits, so a crashed holder
+never leaves a stale lock behind.
+*/
+func acquire(stateDir, name, waitMsg string, log *logger.Logger) (*DeployLock, error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create state directory: %w", err)
 	}
 
-	path := filepath.Join(stateDir, fmt.Sprintf("deploy-%s.lock", repoName))
+	path := filepath.Join(stateDir, name)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open deploy lock file: %w", err)
+		return nil, fmt.Errorf("failed to open lock file %s: %w", path, err)
 	}
 
 	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err == syscall.EWOULDBLOCK {
-		log.Warningf("Another deployment for %s is in progress — waiting for it to finish...", repoName)
+		log.Warning(waitMsg)
 		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
 	}
 	if err != nil {
 		file.Close()
-		return nil, fmt.Errorf("failed to acquire deploy lock: %w", err)
+		return nil, fmt.Errorf("failed to acquire lock %s: %w", path, err)
 	}
 
 	file.Truncate(0)

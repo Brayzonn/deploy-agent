@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -197,10 +198,11 @@ func (e *Executor) serverHealthCheck(domain string) error {
 
 /*
 setupEdge configures nginx and requests an SSL certificate for a
-site. Failures are warnings, not deploy failures — the app is up
-either way, and edge config is fixable without redeploying. No-ops
-when no domain is configured, or when a proxied (non-client) site
-has no port to proxy to.
+site, holding the global edge lock for the whole step. Failures are
+warnings, not deploy failures — the app is up either way, and edge
+config is fixable without redeploying. No-ops when no domain is
+configured, or when a proxied (non-client) site has no port to proxy
+to.
 */
 func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt types.ProjectType, port int) {
 	if domain == "" {
@@ -210,14 +212,62 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 		return
 	}
 
-	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, e.log)
-	if err := nginxMgr.Setup(); err != nil {
+	/*
+		The deploy lock is per-repo but nginx/certbot are global server
+		state, so the whole edge step — nginx.Setup through certbot to the
+		final restore/reload — runs under the process-wide edge lock: a
+		concurrent deploy of another repo cannot reload nginx or run
+		certbot mid-regeneration. Lock ordering is deadlock-safe (per-repo
+		lock always first, in Execute; edge lock second, here) and edge
+		stays best-effort — a lock failure warns and skips, never fails
+		the deploy.
+	*/
+	edgeLock, err := lock.AcquireEdge(e.cfg.StateDir, e.log)
+	if err != nil {
+		e.log.Warningf("Skipping nginx/SSL setup — could not acquire the edge lock: %v", err)
+		return
+	}
+	defer edgeLock.Release()
+
+	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, e.cfg.BackupDir, e.log)
+	res, err := nginxMgr.Setup()
+	if err != nil {
+		// Setup restored or cleaned up its own changes before returning,
+		// so there is nothing to undo here — and with the config in an
+		// unknown state, running certbot against it would be reckless.
 		e.log.Warningf("Nginx setup failed: %v", err)
+		return
 	}
 
 	sslMgr := ssl.New(domain, aliases, e.cfg.SSLEmail, e.log)
-	if err := sslMgr.Setup(); err != nil {
-		e.log.Warningf("SSL setup failed: %v", err)
+	sslErr := sslMgr.Setup()
+
+	/*
+		The regenerated backup lifecycle spans BOTH the nginx step and this
+		certbot step, so it is coordinated here rather than inside Setup. On
+		a regenerated config the new on-disk body has no 443 block yet and
+		nginx has NOT been reloaded (deferred-reload design); certbot is what
+		installs SSL and reloads. If certbot fails (including a rate limit),
+		restore the pre-deploy config so a live site is never left
+		HTTPS-down; on success, reload once more as an idempotent safety net
+		after certbot's own reload. The edge lock held above keeps other
+		repos' deploys away from nginx/certbot for this whole window.
+	*/
+	if res.Outcome == nginx.OutcomeRegenerated {
+		if sslErr != nil {
+			e.log.Warningf("SSL setup failed on a regenerated config for %s: %v — restoring the pre-deploy config so the site is not left HTTPS-down", domain, sslErr)
+			if restoreErr := nginxMgr.RestoreConfig(res.BackupPath); restoreErr != nil {
+				e.log.Errorf("Failed to restore nginx config from backup %s — MANUAL INTERVENTION REQUIRED: %v", res.BackupPath, restoreErr)
+			}
+			return
+		}
+		if reloadErr := nginxMgr.Reload(); reloadErr != nil {
+			e.log.Warningf("Post-certbot nginx reload failed: %v", reloadErr)
+		}
+	}
+
+	if sslErr != nil && !errors.Is(sslErr, ssl.ErrRateLimited) {
+		e.log.Warningf("SSL setup failed: %v", sslErr)
 	}
 }
 
