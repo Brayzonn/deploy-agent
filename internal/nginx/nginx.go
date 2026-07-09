@@ -3,6 +3,8 @@ package nginx
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -158,7 +160,27 @@ func (n *Site) backupConfig() (string, error) {
 	}
 
 	n.log.Infof("Backed up existing nginx config to %s", backupPath)
+
+	n.cleanupOldBackups()
+
 	return backupPath, nil
+}
+
+/* cleanupOldBackups removes old nginx config backups for this domain, keeping only the last 5. */
+func (n *Site) cleanupOldBackups() {
+	pattern := fmt.Sprintf("nginx-%s-*", n.domain)
+
+	matches, err := filepath.Glob(filepath.Join(n.backupDir, pattern))
+	if err != nil || len(matches) <= 5 {
+		return
+	}
+
+	sort.Strings(matches)
+
+	for i := 0; i < len(matches)-5; i++ {
+		os.RemoveAll(matches[i])
+		n.log.Infof("Removed old nginx backup: %s", filepath.Base(matches[i]))
+	}
 }
 
 // ============================================================
