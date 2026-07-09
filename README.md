@@ -45,7 +45,7 @@ Per project type:
 - **Static site** — `npm run build`, back up the current site (last 5 kept), atomically swap the new build into the web root; a failed deploy never replaces the serving site
 - **PM2 backend** — `npm install`/`build`, restart via PM2; failed health check resets git to the previous commit, rebuilds, restarts, and re-verifies
 - **Docker** — tag running images as `:previous`, build (old containers keep serving), run migrations if configured, swap containers; failed container-state or HTTP health check restores the previous images
-- **Docker + client hybrid with `spa_meta_proxy_path`** — the client deploys *before* the Docker service starts, and the service is force-recreated right after. Compose only recreates a container on an image/config diff, and a client web-root swap under an unchanged bind-mount source doesn't trigger one — without this, a container that mounts the client's build to read `index.html` would keep looking at a stale directory indefinitely. Every other Docker + client repo keeps the normal order.
+- **Docker + client hybrid with `spa_meta_proxy_path`** — the client deploys _before_ the Docker service starts, and the service is force-recreated right after. Compose only recreates a container on an image/config diff, and a client web-root swap under an unchanged bind-mount source doesn't trigger one — without this, a container that mounts the client's build to read `index.html` would keep looking at a stale directory indefinitely. Every other Docker + client repo keeps the normal order.
 - **Fullstack** — backend on `api.<domain>` (configurable), then frontend on `<domain>`
 
 ## Requirements
@@ -192,36 +192,36 @@ Deploys the backend on `api.myapp.com` (override with `server_domain`) and the f
 
 ### Fields
 
-| Field                   | Type     | Description                                              | Required              |
-| ----------------------- | -------- | -------------------------------------------------------- | --------------------- |
-| `name`                  | string   | Repository name (defaults to the JSON key)               | Optional              |
-| `deploy_branch`         | string   | Only pushes to this branch deploy (default `main`)       | Optional              |
-| `repo_dir`              | string   | Absolute path where the repo is cloned                   | Yes                   |
-| `project_type`          | string   | `CLIENT`, `API_JS`, `API_TS`, or `DOCKER`                | Yes                   |
-| `use_docker`            | bool     | Enable Docker deployment                                 | For Docker            |
-| `docker_compose_file`   | string   | Compose file name                                        | For Docker            |
-| `docker_env_file`       | string   | Env file for Docker (default `.env.production`)          | Optional              |
-| `requires_migrations`   | bool     | Run migrations before swapping containers                | Optional              |
-| `migration_command`     | string   | Migration command                                        | If migrations enabled |
-| `migration_service`     | string   | Compose service to run migrations in (default `api`)     | Optional              |
-| `infra_services`        | []string | Compose services started before migrations               | If migrations enabled |
-| `web_root`              | string   | Static file path (under `/var/www/html/`)                | For static sites      |
-| `server_dir`            | string   | Directory containing server code                         | For PM2 backends      |
-| `server_entry`          | string   | PM2 entry point (fallback when no ecosystem file)        | For PM2 backends      |
-| `pm2_ecosystem`         | string   | PM2 ecosystem config file                                | Optional              |
-| `domain`                | string   | Primary domain                                           | Optional              |
-| `domain_aliases`        | []string | Additional domains (same config + certificate)           | Optional              |
-| `server_domain`         | string   | Fullstack API domain (default `api.` + `domain`)         | Optional              |
-| `port`                  | int      | Port the app listens on                                  | For backends          |
-| `nginx_max_upload_mb`   | int      | nginx `client_max_body_size` for the API/Docker server block (nginx's own 1MB default applies when unset) | Optional |
-| `health_check_url`      | string   | URL polled after deploy until it returns 200             | Optional              |
-| `health_check_timeout`  | int      | Health check deadline in seconds (default 30)            | Optional              |
-| `full_stack`            | bool     | Deploy backend and frontend from one repo                | Optional              |
-| `client_dir`            | string   | Frontend directory in fullstack/hybrid repos             | For fullstack         |
-| `client_domain`         | string   | Frontend domain for Docker + client hybrid repos         | For hybrid            |
-| `client_domain_aliases` | []string | Frontend domain aliases for hybrid repos                 | Optional              |
-| `client_web_root`       | string   | Frontend web root for hybrid repos                       | For hybrid            |
-| `spa_meta_proxy_path`   | string   | Proxies unmatched client paths to this path on `localhost:<port>` instead of serving `index.html` directly (server-side meta injection); falls back to the static shell if unreachable. Requires `port` > 0; empty (default) is byte-for-byte today's behavior | Optional |
+| Field                   | Type     | Description                                                                                                                                                                                                                                                    | Required              |
+| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `name`                  | string   | Repository name (defaults to the JSON key)                                                                                                                                                                                                                     | Optional              |
+| `deploy_branch`         | string   | Only pushes to this branch deploy (default `main`)                                                                                                                                                                                                             | Optional              |
+| `repo_dir`              | string   | Absolute path where the repo is cloned                                                                                                                                                                                                                         | Yes                   |
+| `project_type`          | string   | `CLIENT`, `API_JS`, `API_TS`, or `DOCKER`                                                                                                                                                                                                                      | Yes                   |
+| `use_docker`            | bool     | Enable Docker deployment                                                                                                                                                                                                                                       | For Docker            |
+| `docker_compose_file`   | string   | Compose file name                                                                                                                                                                                                                                              | For Docker            |
+| `docker_env_file`       | string   | Env file for Docker (default `.env.production`)                                                                                                                                                                                                                | Optional              |
+| `requires_migrations`   | bool     | Run migrations before swapping containers                                                                                                                                                                                                                      | Optional              |
+| `migration_command`     | string   | Migration command                                                                                                                                                                                                                                              | If migrations enabled |
+| `migration_service`     | string   | Compose service to run migrations in (default `api`)                                                                                                                                                                                                           | Optional              |
+| `infra_services`        | []string | Compose services started before migrations                                                                                                                                                                                                                     | If migrations enabled |
+| `web_root`              | string   | Static file path (under `/var/www/html/`)                                                                                                                                                                                                                      | For static sites      |
+| `server_dir`            | string   | Directory containing server code                                                                                                                                                                                                                               | For PM2 backends      |
+| `server_entry`          | string   | PM2 entry point (fallback when no ecosystem file)                                                                                                                                                                                                              | For PM2 backends      |
+| `pm2_ecosystem`         | string   | PM2 ecosystem config file                                                                                                                                                                                                                                      | Optional              |
+| `domain`                | string   | Primary domain                                                                                                                                                                                                                                                 | Optional              |
+| `domain_aliases`        | []string | Additional domains (same config + certificate)                                                                                                                                                                                                                 | Optional              |
+| `server_domain`         | string   | Fullstack API domain (default `api.` + `domain`)                                                                                                                                                                                                               | Optional              |
+| `port`                  | int      | Port the app listens on                                                                                                                                                                                                                                        | For backends          |
+| `nginx_max_upload_mb`   | int      | nginx `client_max_body_size` for the API/Docker server block (nginx's own 1MB default applies when unset)                                                                                                                                                      | Optional              |
+| `health_check_url`      | string   | URL polled after deploy until it returns 200                                                                                                                                                                                                                   | Optional              |
+| `health_check_timeout`  | int      | Health check deadline in seconds (default 30)                                                                                                                                                                                                                  | Optional              |
+| `full_stack`            | bool     | Deploy backend and frontend from one repo                                                                                                                                                                                                                      | Optional              |
+| `client_dir`            | string   | Frontend directory in fullstack/hybrid repos                                                                                                                                                                                                                   | For fullstack         |
+| `client_domain`         | string   | Frontend domain for Docker + client hybrid repos                                                                                                                                                                                                               | For hybrid            |
+| `client_domain_aliases` | []string | Frontend domain aliases for hybrid repos                                                                                                                                                                                                                       | Optional              |
+| `client_web_root`       | string   | Frontend web root for hybrid repos                                                                                                                                                                                                                             | For hybrid            |
+| `spa_meta_proxy_path`   | string   | Proxies unmatched client paths to this path on `localhost:<port>` instead of serving `index.html` directly (server-side meta injection); falls back to the static shell if unreachable. Requires `port` > 0; empty (default) is byte-for-byte today's behavior | Optional              |
 
 ### Env file overlays (optional)
 
@@ -246,11 +246,11 @@ Every deploy copies overlay files into the checkout (mode 600), so fresh clones 
 
 ## Health Checks and Rollback
 
-| Type        | Check                                                        | On failure                                                            |
-| ----------- | ------------------------------------------------------------ | --------------------------------------------------------------------- |
-| PM2         | PM2 process online + HTTP poll until 200                     | Reset to previous commit, rebuild, restart, re-verify                  |
-| Docker      | Container state (incl. compose `healthcheck:`) + HTTP poll   | Restore `:previous` images, verify running image IDs match             |
-| Static site | None needed                                                  | Atomic swap means the old site is still serving; backup restored if the swap itself broke |
+| Type        | Check                                                      | On failure                                                                                |
+| ----------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| PM2         | PM2 process online + HTTP poll until 200                   | Reset to previous commit, rebuild, restart, re-verify                                     |
+| Docker      | Container state (incl. compose `healthcheck:`) + HTTP poll | Restore `:previous` images, verify running image IDs match                                |
+| Static site | None needed                                                | Atomic swap means the old site is still serving; backup restored if the swap itself broke |
 
 First-ever deploys have nothing to roll back to: the agent stops with explicit "manual intervention required" messaging rather than redeploying failed code. Migrations run before the swap and should be backward-compatible — a rollback restores containers, not the database schema.
 
