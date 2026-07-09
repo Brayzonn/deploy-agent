@@ -4,6 +4,20 @@ A Go binary that deploys your projects to a VPS on every GitHub push: clone, bui
 
 **It does not listen for webhooks itself.** A webhook server on the same machine is required — it receives the GitHub push, verifies the signature, and executes this binary once per push with the push metadata in `GITHUB_*` environment variables (see [Webhook Server](#webhook-server)).
 
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [Requirements](#requirements)
+- [Webhook Server](#webhook-server)
+- [Install](#install)
+- [Configuration](#configuration)
+- [nginx and SSL](#nginx-and-ssl)
+- [Health Checks and Rollback](#health-checks-and-rollback)
+- [Slack Notifications](#slack-notifications)
+- [Logs](#logs)
+- [Manual Run](#manual-run)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
 ## Features
 
 - **Zero-config pushes** — push to the deploy branch, site goes live; everything else is ignored
@@ -31,6 +45,7 @@ Per project type:
 - **Static site** — `npm run build`, back up the current site (last 5 kept), atomically swap the new build into the web root; a failed deploy never replaces the serving site
 - **PM2 backend** — `npm install`/`build`, restart via PM2; failed health check resets git to the previous commit, rebuilds, restarts, and re-verifies
 - **Docker** — tag running images as `:previous`, build (old containers keep serving), run migrations if configured, swap containers; failed container-state or HTTP health check restores the previous images
+- **Docker + client hybrid with `spa_meta_proxy_path`** — the client deploys *before* the Docker service starts, and the service is force-recreated right after. Compose only recreates a container on an image/config diff, and a client web-root swap under an unchanged bind-mount source doesn't trigger one — without this, a container that mounts the client's build to read `index.html` would keep looking at a stale directory indefinitely. Every other Docker + client repo keeps the normal order.
 - **Fullstack** — backend on `api.<domain>` (configurable), then frontend on `<domain>`
 
 ## Requirements
@@ -206,6 +221,7 @@ Deploys the backend on `api.myapp.com` (override with `server_domain`) and the f
 | `client_domain`         | string   | Frontend domain for Docker + client hybrid repos         | For hybrid            |
 | `client_domain_aliases` | []string | Frontend domain aliases for hybrid repos                 | Optional              |
 | `client_web_root`       | string   | Frontend web root for hybrid repos                       | For hybrid            |
+| `spa_meta_proxy_path`   | string   | Proxies unmatched client paths to this path on `localhost:<port>` instead of serving `index.html` directly (server-side meta injection); falls back to the static shell if unreachable. Requires `port` > 0; empty (default) is byte-for-byte today's behavior | Optional |
 
 ### Env file overlays (optional)
 
@@ -222,7 +238,8 @@ Every deploy copies overlay files into the checkout (mode 600), so fresh clones 
 ## nginx and SSL
 
 - Configs are generated into `/etc/nginx/sites-available/<domain>` — static file server for `CLIENT`, reverse proxy for everything else, listening on both IPv4 and IPv6
-- Each generated config carries a fingerprint of its body; when the template or the repo's settings change, the next deploy **regenerates** the config (backing up the old one), and certbot re-adds the SSL block. Manually created configs are adopted the same way, with a loud warning — manual customizations are not carried over
+- Client sites can opt into `spa_meta_proxy_path`: unmatched paths proxy to that path on the app's port instead of serving `index.html` directly, falling back to the static shell if the app is unreachable — for server-side meta injection (e.g. per-page OG tags on shareable links). Unset by default; existing sites are unaffected
+- Each generated config carries a fingerprint of its body; when the template or the repo's settings change, the next deploy **regenerates** the config (backing up the old one, capped at 5 backups per domain), and certbot re-adds the SSL block. Manually created configs are adopted the same way, with a loud warning — manual customizations are not carried over
 - If certbot fails after a regeneration (including Let's Encrypt rate limits), the pre-deploy config is restored so the site keeps serving HTTPS
 - A `default-tls` catch-all is created once: TLS handshakes for domains no vhost matches are refused (`ssl_reject_handshake`) instead of being answered with another site's certificate
 - Certificates renew via certbot's `--keep-until-expiring`; nothing manual
