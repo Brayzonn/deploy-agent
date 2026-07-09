@@ -204,7 +204,7 @@ config is fixable without redeploying. No-ops when no domain is
 configured, or when a proxied (non-client) site has no port to proxy
 to.
 */
-func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt types.ProjectType, port int, nginxMaxUpload int) {
+func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt types.ProjectType, port int, nginxMaxUpload int, spaMetaProxyPath string) {
 	if domain == "" {
 		return
 	}
@@ -239,7 +239,7 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 		e.log.Warningf("Default TLS catch-all setup failed: %v", err)
 	}
 
-	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, nginxMaxUpload, e.cfg.BackupDir, e.log)
+	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, nginxMaxUpload, spaMetaProxyPath, e.cfg.BackupDir, e.log)
 	res, err := nginxMgr.Setup()
 	if err != nil {
 		// Setup restored or cleaned up its own changes before returning,
@@ -307,7 +307,9 @@ deployDocker builds and deploys a Docker Compose project: build
 images, start infra and run migrations if configured, bring the
 stack up, set up nginx/SSL, run health checks, and roll back on any
 failure along the way. If the project also has a client, it's
-deployed afterward via a temporary config override.
+deployed via a temporary config override — before the stack comes up
+when SpaMetaProxyPath is set (see clientDeploysFirst), after
+otherwise.
 */
 func (e *Executor) deployDocker() error {
 	e.log.State(types.StateBuildingDocker)
@@ -354,6 +356,36 @@ func (e *Executor) deployDocker() error {
 		e.log.Success("Database migrations completed")
 	}
 
+	/*
+		clientDeploysFirst: a repo with SpaMetaProxyPath set expects its
+		Docker service to bind-mount the client's web root (to read
+		index.html for meta injection), and a bind mount locks onto
+		whatever directory exists at container-start time. deployClient's
+		swap replaces that directory outright, so a container already
+		running when the swap happens is left with a mount pointing at
+		the directory the swap just replaced — and Compose's own "up -d"
+		won't fix that on its own: it only recreates a container when it
+		detects an image/config diff, and a directory swap under an
+		unchanged bind-mount source is invisible to that diff. Deploying
+		the client first, then force-recreating the service below,
+		guarantees the container's mount is always established fresh
+		against the just-swapped directory. Every other Docker+client
+		repo keeps today's order and Compose's normal change detection —
+		this only applies to repos that opted into the coupling.
+	*/
+	clientDeploysFirst := e.ctx.Config.ClientWebRoot != "" && e.ctx.Config.SpaMetaProxyPath != ""
+
+	if clientDeploysFirst {
+		e.log.Info("Deploying client application...")
+		if err := e.deployClient(e.ctx.Config.ClientDomain, e.ctx.Config.ClientDomainAliases, e.ctx.Config.ClientWebRoot); err != nil {
+			return fmt.Errorf("client deployment failed: %w", err)
+		}
+
+		if err := dockerBuilder.ForceRecreateService(e.ctx.Config.MigrationService); err != nil {
+			e.log.Warningf("Failed to recreate the API container after client deploy — it may still have the previous client build mounted: %v", err)
+		}
+	}
+
 	e.log.State(types.StateDeployingDocker)
 	if err := dockerBuilder.Deploy(); err != nil {
 		logs, _ := dockerBuilder.GetLogs("", 50)
@@ -364,11 +396,14 @@ func (e *Executor) deployDocker() error {
 		if migrationsRan {
 			e.log.Warning("Database schema was already migrated for the new version — rolled-back containers will run OLD code against the NEW schema; this only works if the migrations were backward-compatible")
 		}
+		if clientDeploysFirst {
+			e.log.Warning("Client was already deployed before this failure — rolled-back containers will run OLD server code against the NEW client build; this only works if the two are backward-compatible")
+		}
 		dockerBuilder.Rollback()
 		return fmt.Errorf("docker deployment failed: %w", err)
 	}
 
-	e.setupEdge(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB)
+	e.setupEdge(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB, "")
 
 	if e.ctx.Config.HealthCheckURL != "" {
 		healthChecker := health.New(
@@ -390,6 +425,9 @@ func (e *Executor) deployDocker() error {
 			if migrationsRan {
 				e.log.Warning("Database schema was already migrated for the new version — rolled-back containers will run OLD code against the NEW schema; this only works if the migrations were backward-compatible")
 			}
+			if clientDeploysFirst {
+				e.log.Warning("Client was already deployed before this failure — rolled-back containers will run OLD server code against the NEW client build; this only works if the two are backward-compatible")
+			}
 			dockerBuilder.Rollback()
 			return fmt.Errorf("docker deployment failed health check: %w", err)
 		}
@@ -399,7 +437,7 @@ func (e *Executor) deployDocker() error {
 	dockerBuilder.CleanupOnSuccess()
 	e.log.Success("Docker deployment completed successfully!")
 
-	if e.ctx.Config.ClientWebRoot != "" {
+	if e.ctx.Config.ClientWebRoot != "" && !clientDeploysFirst {
 		e.log.Info("Deploying client application...")
 
 		if err := e.deployClient(e.ctx.Config.ClientDomain, e.ctx.Config.ClientDomainAliases, e.ctx.Config.ClientWebRoot); err != nil {
@@ -435,7 +473,7 @@ func (e *Executor) deployClient(domain string, aliases []string, webRoot string)
 		return fmt.Errorf("client build failed: %w", err)
 	}
 
-	e.setupEdge(domain, aliases, webRoot, types.ProjectTypeClient, e.ctx.Config.Port, 0)
+	e.setupEdge(domain, aliases, webRoot, types.ProjectTypeClient, e.ctx.Config.Port, 0, e.ctx.Config.SpaMetaProxyPath)
 
 	backupDir, err := clientBuilder.Deploy(buildResult.OutputDir)
 	if err != nil {
@@ -480,7 +518,7 @@ func (e *Executor) deployServer(domain string, aliases []string) error {
 		return fmt.Errorf("server build failed: %w", err)
 	}
 
-	e.setupEdge(domain, aliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB)
+	e.setupEdge(domain, aliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB, "")
 
 	if err := serverBuilder.Deploy(serverDir); err != nil {
 		e.rollbackServer(serverBuilder, serverDir, domain)

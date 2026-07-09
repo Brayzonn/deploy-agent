@@ -253,6 +253,35 @@ func (d *DockerBuilder) Deploy() error {
 	return nil
 }
 
+/*
+ForceRecreateService recreates a single compose service's container
+even when Compose sees no image or config change, so a container
+whose bind-mounted directory was rewritten out from under it (e.g. a
+client web-root swap) picks up a fresh mount. Compose's own "up -d"
+only recreates a container when it detects a config/image diff — a
+directory swap underneath an unchanged bind-mount source is invisible
+to that diff, so relying on the normal Deploy() path leaves the
+container looking at whatever it had mounted at its last recreation.
+--no-deps scopes the recreate to just this service, leaving
+dependencies (e.g. postgres, redis) untouched. Defaults service to
+"api" when empty, matching RunMigrations' convention.
+*/
+func (d *DockerBuilder) ForceRecreateService(service string) error {
+	if service == "" {
+		service = "api"
+	}
+
+	d.log.Infof("Force-recreating %s so it mounts the current client build...", service)
+
+	output, err := d.compose(stackTimeout, "up", "-d", "--force-recreate", "--no-deps", service)
+	if err != nil {
+		return fmt.Errorf("failed to recreate %s: %w\nOutput: %s", service, err, output)
+	}
+
+	d.log.Successf("%s recreated", service)
+	return nil
+}
+
 // ============================================================
 // Infrastructure
 // ============================================================

@@ -26,14 +26,15 @@ var (
 )
 
 type Site struct {
-	domain         string
-	domainAliases  []string
-	webRoot        string
-	projectType    types.ProjectType
-	port           int
-	nginxMaxUpload int
-	backupDir      string
-	log            *logger.Logger
+	domain           string
+	domainAliases    []string
+	webRoot          string
+	projectType      types.ProjectType
+	port             int
+	nginxMaxUpload   int
+	spaMetaProxyPath string
+	backupDir        string
+	log              *logger.Logger
 }
 
 /*
@@ -56,18 +57,22 @@ New creates a Site for the given domain. backupDir is where a
 regenerated config's pre-change copy is stashed (the same dir the client
 builder uses for web-root backups). nginxMaxUpload sets the API/Docker
 server block's client_max_body_size in MB; 0 leaves nginx's own default
-(1m) in place.
+(1m) in place. spaMetaProxyPath, when non-empty on a client site,
+switches the SPA fallback from serving index.html directly to proxying
+unmatched paths to that path on localhost:port for server-side meta
+injection.
 */
-func New(domain string, domainAliases []string, webRoot string, projectType types.ProjectType, port int, nginxMaxUpload int, backupDir string, log *logger.Logger) *Site {
+func New(domain string, domainAliases []string, webRoot string, projectType types.ProjectType, port int, nginxMaxUpload int, spaMetaProxyPath string, backupDir string, log *logger.Logger) *Site {
 	return &Site{
-		domain:         domain,
-		domainAliases:  domainAliases,
-		webRoot:        webRoot,
-		projectType:    projectType,
-		port:           port,
-		nginxMaxUpload: nginxMaxUpload,
-		backupDir:      backupDir,
-		log:            log,
+		domain:           domain,
+		domainAliases:    domainAliases,
+		webRoot:          webRoot,
+		projectType:      projectType,
+		port:             port,
+		nginxMaxUpload:   nginxMaxUpload,
+		spaMetaProxyPath: spaMetaProxyPath,
+		backupDir:        backupDir,
+		log:              log,
 	}
 }
 

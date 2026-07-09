@@ -12,12 +12,40 @@ import (
 /*
 generateClientConfig builds a static-file server block: serves
 webRoot directly, falls back to index.html for client-side routing,
-and adds standard security headers, gzip, and asset caching.
+and adds standard security headers, gzip, and asset caching. When
+spaMetaProxyPath is set (and a port is available to proxy to), the
+fallback instead proxies unmatched paths to that path on the API for
+server-side meta injection, falling back to index.html if the API is
+unreachable.
 */
 func (n *Site) generateClientConfig() string {
 	serverNames := n.domain
 	if len(n.domainAliases) > 0 {
 		serverNames = n.domain + " " + strings.Join(n.domainAliases, " ")
+	}
+
+	// Default SPA behavior: serve static files, fall back to index.html.
+	rootLocation := `location / {
+        try_files $uri $uri/ /index.html;
+    }`
+
+	// Opt-in meta-injection: unmatched paths proxy to the API's pages
+	// endpoint for server-side OG/meta rendering, falling back to the
+	// static SPA shell if the API is unreachable. Requires a port to
+	// proxy to; falls back to the plain block when absent so a
+	// misconfigured site still produces a valid config.
+	if n.spaMetaProxyPath != "" && n.port > 0 {
+		rootLocation = fmt.Sprintf(`location / {
+        try_files $uri @spa_fallback;
+    }
+
+    location @spa_fallback {
+        proxy_pass http://localhost:%d%s$request_uri;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_intercept_errors on;
+        error_page 502 503 504 = /index.html;
+    }`, n.port, n.spaMetaProxyPath)
 	}
 
 	return fmt.Sprintf(`server {
@@ -27,9 +55,7 @@ func (n *Site) generateClientConfig() string {
     root %s;
     index index.html;
 
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
+    %s
 
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -46,7 +72,7 @@ func (n *Site) generateClientConfig() string {
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
-}`, serverNames, n.webRoot)
+}`, serverNames, n.webRoot, rootLocation)
 }
 
 /*

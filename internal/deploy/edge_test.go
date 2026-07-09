@@ -126,7 +126,7 @@ func TestSetupEdgeRegeneratedCertbotErrorRestores(t *testing.T) {
 	}
 	e := newEdgeExecutor(t, stub, true)
 
-	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0)
+	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "")
 
 	if !stub.restoredConfig() {
 		t.Fatalf("regenerated + certbot error should restore the backup, ran: %v", stub.calls)
@@ -146,7 +146,7 @@ func TestSetupEdgeRegeneratedRateLimitRestores(t *testing.T) {
 	}
 	e := newEdgeExecutor(t, stub, true)
 
-	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0)
+	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "")
 
 	if !stub.restoredConfig() {
 		t.Fatalf("regenerated + rate limit should restore the backup, ran: %v", stub.calls)
@@ -165,7 +165,7 @@ func TestSetupEdgeCreatedRateLimitNoRestore(t *testing.T) {
 	}
 	e := newEdgeExecutor(t, stub, false) // no config on disk → created
 
-	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0)
+	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "")
 
 	if !stub.called("certbot") {
 		t.Fatalf("created path should still request a certificate, ran: %v", stub.calls)
@@ -194,7 +194,7 @@ func TestSetupEdgeEnsuresDefaultTLS(t *testing.T) {
 	stub := &edgeStub{}
 	e := newEdgeExecutor(t, stub, false)
 
-	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0)
+	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "")
 
 	if !stub.called("sites-available/default-tls") {
 		t.Fatalf("setupEdge should create the default TLS catch-all, ran: %v", stub.calls)
@@ -222,7 +222,7 @@ func TestSetupEdgeWaitsForEdgeLock(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0)
+		e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "")
 		close(done)
 	}()
 

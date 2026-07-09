@@ -91,7 +91,7 @@ func newTestSite(t *testing.T, pt types.ProjectType, rec *recorder, existing boo
 
 	t.Cleanup(run.Stub(rec.run))
 
-	return New("example.com", nil, "/var/www/html/example.com", pt, 3000, 0, filepath.Join(tmp, "backups"), testLogger(t))
+	return New("example.com", nil, "/var/www/html/example.com", pt, 3000, 0, "", filepath.Join(tmp, "backups"), testLogger(t))
 }
 
 // ============================================================
@@ -131,7 +131,7 @@ symlink is left completely alone: no tee (no write) and no reload.
 func TestSetupUnchangedSequence(t *testing.T) {
 	rec := &recorder{}
 	// Precompute the marked body so the scripted `cat` matches the wanted body.
-	probe := New("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "", nil)
+	probe := New("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "", "", nil)
 	want, _ := probe.desiredConfig()
 	rec.catOut = markerLine(configFingerprint(want)) + "\n" + want
 
