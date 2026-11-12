@@ -242,9 +242,6 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 	nginxMgr := nginx.New(domain, aliases, webRoot, pt, port, nginxMaxUpload, spaMetaProxyPath, e.cfg.BackupDir, e.log)
 	res, err := nginxMgr.Setup()
 	if err != nil {
-		// Setup restored or cleaned up its own changes before returning,
-		// so there is nothing to undo here — and with the config in an
-		// unknown state, running certbot against it would be reckless.
 		e.log.Warningf("Nginx setup failed: %v", err)
 		return
 	}
@@ -325,6 +322,7 @@ func (e *Executor) deployDocker() error {
 	e.log.Infof("Env file: %s", e.ctx.Config.DockerEnvFile)
 
 	dockerBuilder := build.NewDockerBuilder(
+		e.ctx.RepoName,
 		workDir,
 		e.ctx.Config.DockerComposeFile,
 		e.ctx.Config.DockerEnvFile,

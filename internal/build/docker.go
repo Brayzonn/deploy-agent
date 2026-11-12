@@ -23,6 +23,7 @@ const (
 )
 
 type DockerBuilder struct {
+	repoName    string
 	workDir     string
 	composeFile string
 	envFile     string
@@ -99,7 +100,7 @@ func (d *DockerBuilder) composeOut(timeout time.Duration, args ...string) (strin
 NewDockerBuilder creates a DockerBuilder for workDir, defaulting the
 compose and env file names when the caller doesn't override them.
 */
-func NewDockerBuilder(workDir, composeFile, envFile string, log *logger.Logger) *DockerBuilder {
+func NewDockerBuilder(repoName, workDir, composeFile, envFile string, log *logger.Logger) *DockerBuilder {
 	if composeFile == "" {
 		composeFile = "docker-compose.prod.yml"
 	}
@@ -110,6 +111,7 @@ func NewDockerBuilder(workDir, composeFile, envFile string, log *logger.Logger) 
 	log.Infof("Using Compose command: %s", strings.Join(composeBase(), " "))
 
 	return &DockerBuilder{
+		repoName:    repoName,
 		workDir:     workDir,
 		composeFile: composeFile,
 		envFile:     envFile,
@@ -181,9 +183,13 @@ func (d *DockerBuilder) cleanPreviousTags() {
 	d.prevImages = nil
 }
 
-/* projectName derives a stable image-tag prefix from the working directory name. */
+/* projectName derives a stable image-tag prefix from the repo name. */
 func (d *DockerBuilder) projectName() string {
-	return strings.ToLower(filepath.Base(d.workDir))
+	name := d.repoName
+	if name == "" {
+		name = filepath.Base(d.workDir)
+	}
+	return strings.Trim(strings.ToLower(name), "._-")
 }
 
 // ============================================================
