@@ -67,6 +67,7 @@ func (s *Cert) RequestCertificate() error {
 		"--non-interactive",
 		"--agree-tos",
 		"--keep-until-expiring",
+		"--expand",
 		"--redirect",
 	}
 
