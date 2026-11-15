@@ -1,8 +1,8 @@
 # Deploy Agent
 
-A Go binary that deploys your projects to a VPS on every GitHub push: clone, build, nginx, SSL, health check, rollback.
+A Go binary that deploys projects to a VPS on every GitHub push. It clones, builds, configures nginx and SSL, runs health checks, and rolls back on failure.
 
-**It does not listen for webhooks itself.** A webhook server on the same machine is required — it receives the GitHub push, verifies the signature, and executes this binary once per push with the push metadata in `GITHUB_*` environment variables (see [Webhook Server](#webhook-server)).
+The agent does not listen for webhooks. A webhook server on the same machine receives the push, verifies the signature, and runs the binary with the push details in `GITHUB_*` environment variables. See [Webhook Server](#webhook-server).
 
 - [Features](#features)
 - [How It Works](#how-it-works)
@@ -20,15 +20,15 @@ A Go binary that deploys your projects to a VPS on every GitHub push: clone, bui
 
 ## Features
 
-- **Zero-config pushes** — push to the deploy branch, site goes live; everything else is ignored
-- **Four project types** — static frontends (`CLIENT`), Node/TypeScript backends via PM2 (`API_JS`/`API_TS`), Docker Compose apps (`DOCKER`), and fullstack (frontend + backend from one repo)
-- **nginx managed for you** — configs generated per site (dual-stack IPv4/IPv6), regenerated automatically when the template or repo settings change, plus a default TLS catch-all so unmatched domains get a refused handshake instead of another site's certificate
-- **SSL via Let's Encrypt** — certbot requests and renews certificates; a failed certbot run on a regenerated config restores the previous working config so a live site is never left HTTPS-down
-- **Health checks with rollback** — failed deploys roll back to the previous commit (PM2) or previous images (Docker) and verify the old version actually serves
-- **Slack notifications** — a "deployment started" message on every deploy (doubling as a health check of the alert channel) and a failure alert with the error when a deploy fails
-- **Safe concurrency** — per-repo locks queue concurrent pushes; a global edge lock serializes all nginx/certbot work across repos
-- **Config as data** — repos live in a JSON file on the server; add or change projects without rebuilding the binary
-- **Deterministic and bounded** — deploys exactly the pushed commit; every command (git, npm, docker, certbot) has a hard timeout
+- Deploys the exact pushed commit when the push is to the deploy branch
+- Supports static frontends (`CLIENT`), Node/TypeScript backends on PM2 (`API_JS`, `API_TS`), Docker Compose apps (`DOCKER`), and fullstack repos
+- Generates an nginx config per site and regenerates it when settings change
+- Gets SSL certificates from Let's Encrypt through certbot
+- Rolls back failed deploys after a health check
+- Sends Slack messages when a deploy starts and when it fails
+- Queues concurrent pushes to the same repo
+- Reads repo settings from a JSON file, so adding a project needs no rebuild
+- Puts a time limit on every command
 
 ## How It Works
 
@@ -40,25 +40,30 @@ GitHub push → webhook server → deploy-agent
                                                                    rollback
 ```
 
-Per project type:
-
-- **Static site** — `npm run build`, back up the current site (last 5 kept), atomically swap the new build into the web root; a failed deploy never replaces the serving site
-- **PM2 backend** — `npm install`/`build`, restart via PM2; failed health check resets git to the previous commit, rebuilds, restarts, and re-verifies
-- **Docker** — tag running images as `:previous`, build (old containers keep serving), run migrations if configured, swap containers; failed container-state or HTTP health check restores the previous images
-- **Docker + client hybrid with `spa_meta_proxy_path`** — the client deploys _before_ the Docker service starts, and the service is force-recreated right after. Compose only recreates a container on an image/config diff, and a client web-root swap under an unchanged bind-mount source doesn't trigger one — without this, a container that mounts the client's build to read `index.html` would keep looking at a stale directory indefinitely. Every other Docker + client repo keeps the normal order.
-- **Fullstack** — backend on `api.<domain>` (configurable), then frontend on `<domain>`
+- **Static site**: runs `npm run build`, keeps the last 5 builds as backups, and swaps the new build into the web root.
+- **PM2 backend**: installs, builds, and restarts through PM2. If the health check fails, it resets to the previous commit and redeploys.
+- **Docker**: tags the running images as `:previous`, builds, runs migrations if configured, and swaps the containers. If the health check fails, it restores the previous images.
+- **Docker + client**: deploys the API with Docker and the frontend as a static site. With `spa_meta_proxy_path` set, the frontend deploys first and the API container is recreated so it reads the new build.
+- **Fullstack**: deploys the backend on `api.<domain>` and the frontend on `<domain>`.
 
 ## Requirements
 
-- Linux VPS, non-root user with sudo
-- `git`, `nginx`, `certbot` (`python3-certbot-nginx`), Node.js 18+ with `npm`
-- `pm2` for PM2 deployments; `docker` + compose plugin for Docker deployments (user in the `docker` group)
-- A webhook server (below)
+- Linux VPS with a non-root user that has sudo
+- Go 1.25+ to build the binary
+- `git`, `nginx` 1.19.4+, `certbot` with `python3-certbot-nginx`, Node.js 18+ with `npm`
+- `pm2` for PM2 backends
+- `docker` with the compose plugin for Docker apps, with the deploy user in the `docker` group
+- A webhook server (see below)
 
-Passwordless sudo for the commands the agent runs — `sudo visudo -f /etc/sudoers.d/deploy-agent`:
+The deploy user must be able to write to `/var/www/html`:
+
+```bash
+sudo chown youruser /var/www/html
+```
+
+nginx and certbot need passwordless sudo. Run `sudo visudo -f /etc/sudoers.d/deploy-agent` and add:
 
 ```
-youruser ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /var/www/html/*
 youruser ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/nginx/sites-available/*
 youruser ALL=(ALL) NOPASSWD: /usr/bin/cat /etc/nginx/sites-available/*
 youruser ALL=(ALL) NOPASSWD: /usr/bin/cp /etc/nginx/sites-available/* *
@@ -69,20 +74,14 @@ youruser ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/nginx/sites-enabled/*
 youruser ALL=(ALL) NOPASSWD: /usr/bin/nginx -t
 youruser ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t
 youruser ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
-youruser ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
 youruser ALL=(ALL) NOPASSWD: /usr/bin/certbot*
 ```
 
-The `cat`/`cp`/`rm` entries are used by config regeneration (read, backup/restore, cleanup) — older installs that predate it need these added.
-
-Verify with `sudo nginx -t` — it must not ask for a password.
+Check it with `sudo nginx -t`. It should run without asking for a password.
 
 ## Webhook Server
 
-The agent is a one-shot process: the webhook server runs it once per push and must
-
-1. verify the GitHub webhook signature,
-2. execute the binary with these variables set:
+The webhook server must verify the GitHub signature and run the binary with these variables set:
 
 ```
 GITHUB_REPO_NAME        repo name
@@ -93,9 +92,13 @@ GITHUB_COMMIT           full 40-character commit hash
 GITHUB_PUSHER           pusher username
 ```
 
-3. pass its own environment through (so `SSL_EMAIL`, `SLACK_WEBHOOK_URL`, etc. reach the agent — in Node: `exec(script, { env: { ...process.env, GITHUB_...: ... } })`).
+It must also pass its own environment through, so `SSL_EMAIL` and `SLACK_WEBHOOK_URL` reach the agent. In Node:
 
-Any webhook server that does this works; a small Express app with signature verification is enough. All values are validated at startup — short or fake commit hashes and names with path separators are rejected.
+```js
+exec(script, { env: { ...process.env, GITHUB_REPO_NAME: name /* ... */ } });
+```
+
+A small Express app with signature verification is enough. The agent checks every value at startup and rejects short commit hashes and names that contain path separators.
 
 ## Install
 
@@ -106,26 +109,26 @@ GOOS=linux GOARCH=amd64 go build -o deploy-agent
 scp deploy-agent user@server:/home/youruser/scripts/deploy-agent
 ```
 
-Point the webhook server at it (its `.env`):
+Add these to the webhook server's `.env`:
 
 ```bash
 DEPLOYMENT_SCRIPT=/home/youruser/scripts/deploy-agent
-SSL_EMAIL=you@example.com                    # Let's Encrypt notifications
-SLACK_WEBHOOK_URL=https://hooks.slack.com/…  # optional; notifications disabled (with a logged warning) when unset
+SSL_EMAIL=you@example.com                    # Let's Encrypt notices
+SLACK_WEBHOOK_URL=https://hooks.slack.com/…  # optional
 ```
 
-Rebuild only when the Go code changes — repo config changes are picked up on the next deploy.
+Rebuild only when the Go code changes. Changes to the repo config apply on the next deploy.
 
 ## Configuration
 
-Repos live in `/etc/deploy-agent/repos.json` (override with `DEPLOY_AGENT_REPOS_FILE`). **The file is required**; only repos listed in it can deploy. Start from the template:
+Repos are listed in `/etc/deploy-agent/repos.json`. Set `DEPLOY_AGENT_REPOS_FILE` to use a different path. Only repos in this file can deploy.
 
 ```bash
 sudo mkdir -p /etc/deploy-agent
 sudo cp repos.example.json /etc/deploy-agent/repos.json
 ```
 
-Unknown field names are rejected at load time; repo dirs must be absolute and web roots must live under `/var/www/html/`.
+Unknown fields are rejected. `repo_dir` must be an absolute path and web roots must be under `/var/www/html/`.
 
 **Static site:**
 
@@ -173,6 +176,25 @@ Unknown field names are rejected at load time; repo dirs must be absolute and we
 }
 ```
 
+**Docker API + static frontend:**
+
+```json
+"your-app": {
+  "repo_dir": "/home/youruser/your-app",
+  "project_type": "DOCKER",
+  "use_docker": true,
+  "docker_compose_file": "docker-compose.prod.yml",
+  "server_dir": "server",
+  "client_dir": "client",
+  "domain": "api.yourdomain.com",
+  "port": 4100,
+  "health_check_url": "http://localhost:4100/health",
+  "client_domain": "yourdomain.com",
+  "client_domain_aliases": ["www.yourdomain.com"],
+  "client_web_root": "/var/www/html/your-app"
+}
+```
+
 **Fullstack (one repo, two sites):**
 
 ```json
@@ -188,44 +210,44 @@ Unknown field names are rejected at load time; repo dirs must be absolute and we
 }
 ```
 
-Deploys the backend on `api.myapp.com` (override with `server_domain`) and the frontend on `myapp.com`.
+This deploys the backend on `api.myapp.com` and the frontend on `myapp.com`. Set `server_domain` to change the backend domain.
 
 ### Fields
 
-| Field                   | Type     | Description                                                                                                                                                                                                                                                    | Required              |
-| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `name`                  | string   | Repository name (defaults to the JSON key)                                                                                                                                                                                                                     | Optional              |
-| `deploy_branch`         | string   | Only pushes to this branch deploy (default `main`)                                                                                                                                                                                                             | Optional              |
-| `repo_dir`              | string   | Absolute path where the repo is cloned                                                                                                                                                                                                                         | Yes                   |
-| `project_type`          | string   | `CLIENT`, `API_JS`, `API_TS`, or `DOCKER`                                                                                                                                                                                                                      | Yes                   |
-| `use_docker`            | bool     | Enable Docker deployment                                                                                                                                                                                                                                       | For Docker            |
-| `docker_compose_file`   | string   | Compose file name                                                                                                                                                                                                                                              | For Docker            |
-| `docker_env_file`       | string   | Env file for Docker (default `.env.production`)                                                                                                                                                                                                                | Optional              |
-| `requires_migrations`   | bool     | Run migrations before swapping containers                                                                                                                                                                                                                      | Optional              |
-| `migration_command`     | string   | Migration command                                                                                                                                                                                                                                              | If migrations enabled |
-| `migration_service`     | string   | Compose service to run migrations in (default `api`)                                                                                                                                                                                                           | Optional              |
-| `infra_services`        | []string | Compose services started before migrations                                                                                                                                                                                                                     | If migrations enabled |
-| `web_root`              | string   | Static file path (under `/var/www/html/`)                                                                                                                                                                                                                      | For static sites      |
-| `server_dir`            | string   | Directory containing server code                                                                                                                                                                                                                               | For PM2 backends      |
-| `server_entry`          | string   | PM2 entry point (fallback when no ecosystem file)                                                                                                                                                                                                              | For PM2 backends      |
-| `pm2_ecosystem`         | string   | PM2 ecosystem config file                                                                                                                                                                                                                                      | Optional              |
-| `domain`                | string   | Primary domain                                                                                                                                                                                                                                                 | Optional              |
-| `domain_aliases`        | []string | Additional domains (same config + certificate)                                                                                                                                                                                                                 | Optional              |
-| `server_domain`         | string   | Fullstack API domain (default `api.` + `domain`)                                                                                                                                                                                                               | Optional              |
-| `port`                  | int      | Port the app listens on                                                                                                                                                                                                                                        | For backends          |
-| `nginx_max_upload_mb`   | int      | nginx `client_max_body_size` for the API/Docker server block (nginx's own 1MB default applies when unset)                                                                                                                                                      | Optional              |
-| `health_check_url`      | string   | URL polled after deploy until it returns 200                                                                                                                                                                                                                   | Optional              |
-| `health_check_timeout`  | int      | Health check deadline in seconds (default 30)                                                                                                                                                                                                                  | Optional              |
-| `full_stack`            | bool     | Deploy backend and frontend from one repo                                                                                                                                                                                                                      | Optional              |
-| `client_dir`            | string   | Frontend directory in fullstack/hybrid repos                                                                                                                                                                                                                   | For fullstack         |
-| `client_domain`         | string   | Frontend domain for Docker + client hybrid repos                                                                                                                                                                                                               | For hybrid            |
-| `client_domain_aliases` | []string | Frontend domain aliases for hybrid repos                                                                                                                                                                                                                       | Optional              |
-| `client_web_root`       | string   | Frontend web root for hybrid repos                                                                                                                                                                                                                             | For hybrid            |
-| `spa_meta_proxy_path`   | string   | Proxies unmatched client paths to this path on `localhost:<port>` instead of serving `index.html` directly (server-side meta injection); falls back to the static shell if unreachable. Requires `port` > 0; empty (default) is byte-for-byte today's behavior | Optional              |
+| Field | Type | Description | Required |
+| --- | --- | --- | --- |
+| `name` | string | Repo name. Defaults to the JSON key | No |
+| `deploy_branch` | string | Branch that triggers deploys. Default `main` | No |
+| `repo_dir` | string | Absolute path to the clone | Yes |
+| `project_type` | string | `CLIENT`, `API_JS`, `API_TS`, or `DOCKER` | Yes |
+| `use_docker` | bool | Set to `true` for Docker apps | Docker |
+| `docker_compose_file` | string | Compose file name | Docker |
+| `docker_env_file` | string | Env file for Compose. Default `.env.production` | No |
+| `requires_migrations` | bool | Run migrations before swapping containers | No |
+| `migration_command` | string | Migration command | With migrations |
+| `migration_service` | string | Compose service that runs migrations. Default `api` | No |
+| `infra_services` | []string | Compose services started before migrations | With migrations |
+| `web_root` | string | Where the built site is served from | Static sites |
+| `server_dir` | string | Directory with the server code | PM2 |
+| `server_entry` | string | PM2 entry point when there is no ecosystem file | PM2 |
+| `pm2_ecosystem` | string | PM2 ecosystem file | No |
+| `domain` | string | Main domain | No |
+| `domain_aliases` | []string | Extra domains on the same site and certificate | No |
+| `server_domain` | string | Fullstack backend domain. Default `api.<domain>` | No |
+| `port` | int | Port the app listens on | Backends |
+| `nginx_max_upload_mb` | int | Upload size limit for the backend. nginx defaults to 1 MB | No |
+| `health_check_url` | string | URL checked after deploy until it returns 200 | No |
+| `health_check_timeout` | int | Seconds to wait for the health check. Default 30 | No |
+| `full_stack` | bool | Deploy backend and frontend from one repo | No |
+| `client_dir` | string | Frontend directory | Fullstack, Docker + client |
+| `client_domain` | string | Frontend domain | Docker + client |
+| `client_domain_aliases` | []string | Extra frontend domains | No |
+| `client_web_root` | string | Where the frontend is served from | Docker + client |
+| `spa_meta_proxy_path` | string | Path on `localhost:<port>` that renders frontend pages with server-side meta tags. Falls back to `index.html` if the app is down. Needs `port` | No |
 
-### Env file overlays (optional)
+### Env files
 
-Gitignored env files (`.env.production` etc.) can be staged outside the repo at `/etc/deploy-agent/env/<repo>/` (override with `DEPLOY_AGENT_ENV_DIR`), mirroring their path inside the repo:
+Gitignored env files such as `.env.production` can be kept at `/etc/deploy-agent/env/<repo>/`, using the same path they have inside the repo. Set `DEPLOY_AGENT_ENV_DIR` to use a different folder.
 
 ```bash
 sudo mkdir -p /etc/deploy-agent/env/your-docker-app
@@ -233,43 +255,43 @@ sudo cp .env.production /etc/deploy-agent/env/your-docker-app/.env.production
 sudo chmod -R go-rwx /etc/deploy-agent/env
 ```
 
-Every deploy copies overlay files into the checkout (mode 600), so fresh clones work and editing a master copy rolls out on the next deploy. Repos without an overlay are untouched; an absent env file never fails a deploy (an app that needs one fails its own startup, which the health check turns into a rollback).
+Each deploy copies these files into the checkout with mode 600. A missing env file does not fail the deploy.
 
 ## nginx and SSL
 
-- Configs are generated into `/etc/nginx/sites-available/<domain>` — static file server for `CLIENT`, reverse proxy for everything else, listening on both IPv4 and IPv6
-- Client sites can opt into `spa_meta_proxy_path`: unmatched paths proxy to that path on the app's port instead of serving `index.html` directly, falling back to the static shell if the app is unreachable — for server-side meta injection (e.g. per-page OG tags on shareable links). Unset by default; existing sites are unaffected
-- Each generated config carries a fingerprint of its body; when the template or the repo's settings change, the next deploy **regenerates** the config (backing up the old one, capped at 5 backups per domain), and certbot re-adds the SSL block. Manually created configs are adopted the same way, with a loud warning — manual customizations are not carried over
-- If certbot fails after a regeneration (including Let's Encrypt rate limits), the pre-deploy config is restored so the site keeps serving HTTPS
-- A `default-tls` catch-all is created once: TLS handshakes for domains no vhost matches are refused (`ssl_reject_handshake`) instead of being answered with another site's certificate
-- Certificates renew via certbot's `--keep-until-expiring`; nothing manual
+- Configs are written to `/etc/nginx/sites-available/<domain>`. Static sites are served as files and everything else is a reverse proxy. Both IPv4 and IPv6 are enabled.
+- When the template or the repo settings change, the next deploy regenerates the config. The old config is backed up, with 5 kept per domain. Hand-written configs are replaced the same way and their custom changes are lost.
+- certbot adds HTTPS and redirects HTTP to it. A new alias is added to the existing certificate.
+- If certbot fails after a regeneration, the previous config is restored so the site stays on HTTPS.
+- A `default-tls` site refuses HTTPS requests for domains that have no config, so they never get another site's certificate.
+- Certificates are renewed by certbot's own timer. Check it with `systemctl list-timers | grep certbot`.
 
 ## Health Checks and Rollback
 
-| Type        | Check                                                      | On failure                                                                                |
-| ----------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| PM2         | PM2 process online + HTTP poll until 200                   | Reset to previous commit, rebuild, restart, re-verify                                     |
-| Docker      | Container state (incl. compose `healthcheck:`) + HTTP poll | Restore `:previous` images, verify running image IDs match                                |
-| Static site | None needed                                                | Atomic swap means the old site is still serving; backup restored if the swap itself broke |
+| Type | Check | On failure |
+| --- | --- | --- |
+| PM2 | Process is online and the URL returns 200 | Reset to the previous commit, rebuild, restart |
+| Docker | Containers are healthy and the URL returns 200 | Restore the `:previous` images |
+| Static site | None | The old site keeps serving until the swap succeeds |
 
-First-ever deploys have nothing to roll back to: the agent stops with explicit "manual intervention required" messaging rather than redeploying failed code. Migrations run before the swap and should be backward-compatible — a rollback restores containers, not the database schema.
+A first deploy has nothing to roll back to, so the agent stops and logs that manual intervention is required. Rollback restores containers but not the database, so migrations should be backward-compatible.
 
 ## Slack Notifications
 
-With `SLACK_WEBHOOK_URL` set, every deploy posts a **"Deployment started"** message (repo, branch, commit, pusher, deployment ID) and failures post an alert with the error. The start message doubles as an end-to-end check of the alert channel: every deploy log records whether the post succeeded, and an unset URL logs a "notifications DISABLED" warning instead of staying silent. Notification problems never fail a deploy.
+Set `SLACK_WEBHOOK_URL` to get a message when a deploy starts and an alert with the error when it fails. If the URL is not set, the deploy log shows a warning. Slack errors never fail a deploy.
 
 ## Logs
 
-Each deploy writes `~/logs/deployments/deployment_YYYYMMDD_HHMMSS_PID.log` (also colored console output via the webhook server's stdout).
+Each deploy writes `~/logs/deployments/deployment_YYYYMMDD_HHMMSS_PID.log`. Output also goes to the webhook server's stdout.
 
 ```bash
-tail -f $(ls -t ~/logs/deployments/deployment_*.log | head -1)   # follow latest
+tail -f $(ls -t ~/logs/deployments/deployment_*.log | head -1)   # follow the latest
 grep ERROR ~/logs/deployments/*.log                              # find failures
 ```
 
 ## Manual Run
 
-Deploy without a push — the commit must be a real, full 40-character hash on the branch:
+To deploy without a push, set the variables yourself. The commit must be a full 40-character hash on the branch.
 
 ```bash
 export GITHUB_REPO_NAME="your-repo"
@@ -284,13 +306,14 @@ export SSL_EMAIL="you@example.com"
 
 ## Troubleshooting
 
-- **"permission denied"** — sudoers not set up; `sudo nginx -t` must run without a password prompt
-- **"repos file does not exist"** — install `/etc/deploy-agent/repos.json` (see Configuration)
-- **Repo not deploying** — it must be listed in `repos.json`, and the push must be to its `deploy_branch`; check SSH access with `ssh -T git@github.com`
-- **"timed out after X"** — every command has a hard deadline (npm install 10m, build 15m, docker build 30m); the error names the phase
-- **Certbot failures** — check DNS (`dig yourdomain.com`), ports 80/443, and `/var/log/letsencrypt/letsencrypt.log`; Let's Encrypt allows 5 certificates per domain per week
-- **Health check fails but the app works** — raise `health_check_timeout`, verify `health_check_url` responds locally with `curl`
-- **No Slack messages** — the deploy log says why: "DISABLED" means the URL didn't reach the agent (check the webhook server's `.env` and that it spreads `process.env` into the child environment); an HTTP error is logged with Slack's response body
+- **Permission denied**: sudoers is not set up, or the deploy user cannot write to `/var/www/html`.
+- **"repos file does not exist"**: create `/etc/deploy-agent/repos.json`.
+- **Repo not deploying**: check that it is in `repos.json`, that the push went to its `deploy_branch`, and that `ssh -T git@github.com` works.
+- **"timed out after X"**: the limits are 10 minutes for npm install, 15 for builds, and 30 for Docker builds. The error names the step.
+- **`ERR_SSL_UNRECOGNIZED_NAME_ALERT` in the browser**: the domain has no nginx config. Add it to `domain_aliases` or `client_domain_aliases` and redeploy.
+- **certbot fails**: check DNS with `dig yourdomain.com`, check that ports 80 and 443 are open, and read `/var/log/letsencrypt/letsencrypt.log`. Let's Encrypt allows 5 certificates per week for the same set of domains.
+- **Health check fails but the app works**: raise `health_check_timeout` and test `health_check_url` with `curl` on the server.
+- **No Slack messages**: the deploy log says why. "DISABLED" means `SLACK_WEBHOOK_URL` did not reach the agent.
 
 ## License
 
