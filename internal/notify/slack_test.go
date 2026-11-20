@@ -101,12 +101,31 @@ func TestNotifyFailurePostsPayload(t *testing.T) {
 }
 
 /*
+TestNotifyWarningPostsPayload checks a succeeded-but-needs-attention
+deploy posts every item plus the deployment ID.
+*/
+func TestNotifyWarningPostsPayload(t *testing.T) {
+	srv, bodies := captureWebhook(t)
+
+	NewSlack(srv.URL, testLogger(t)).NotifyWarning(testContext(), []string{"nginx restore failed", "second item"})
+
+	if len(*bodies) != 1 {
+		t.Fatalf("expected 1 webhook post, got %d", len(*bodies))
+	}
+	for _, want := range []string{"needs attention", "nginx restore failed", "second item", "deploy-42"} {
+		if !strings.Contains((*bodies)[0], want) {
+			t.Errorf("warning payload missing %q: %s", want, (*bodies)[0])
+		}
+	}
+}
+
+/*
 TestEmptyURLSendsNothing checks an unset webhook URL never attempts a
 request (the warn-and-skip path) and never panics.
 */
 func TestEmptyURLSendsNothing(t *testing.T) {
 	srv, bodies := captureWebhook(t)
-	_ = srv // a server exists, but the notifier is not pointed at it
+	_ = srv
 
 	n := NewSlack("", testLogger(t))
 	n.NotifyStart(testContext())

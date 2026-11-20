@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
@@ -63,6 +64,19 @@ func (s *SlackNotifier) NotifyFailure(ctx *types.DeploymentContext, deployErr er
 		ctx.RepoName, ctx.Branch, ctx.Commit, ctx.Pusher, ctx.DeploymentID, deployErr,
 	)
 	s.post("failure", message)
+}
+
+/*
+NotifyWarning posts a message for a deploy that succeeded but left
+something that needs a human — for example an nginx config that
+could not be restored. Each item becomes one line of the message.
+*/
+func (s *SlackNotifier) NotifyWarning(ctx *types.DeploymentContext, items []string) {
+	message := fmt.Sprintf(
+		":warning: *Deployed, but needs attention* — %s\n>Branch: `%s` | Commit: `%.7s` | Pushed by: %s\n>Deployment ID: `%s`\n```%s```",
+		ctx.RepoName, ctx.Branch, ctx.Commit, ctx.Pusher, ctx.DeploymentID, strings.Join(items, "\n"),
+	)
+	s.post("warning", message)
 }
 
 /*
