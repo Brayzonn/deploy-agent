@@ -24,16 +24,10 @@ func (n *Site) generateClientConfig() string {
 		serverNames = n.domain + " " + strings.Join(n.domainAliases, " ")
 	}
 
-	// Default SPA behavior: serve static files, fall back to index.html.
 	rootLocation := `location / {
         try_files $uri $uri/ /index.html;
     }`
 
-	// Opt-in meta-injection: unmatched paths proxy to the API's pages
-	// endpoint for server-side OG/meta rendering, falling back to the
-	// static SPA shell if the API is unreachable. Requires a port to
-	// proxy to; falls back to the plain block when absent so a
-	// misconfigured site still produces a valid config.
 	if n.spaMetaProxyPath != "" && n.port > 0 {
 		rootLocation = fmt.Sprintf(`location / {
         try_files $uri @spa_fallback;

@@ -79,7 +79,6 @@ func TestFingerprintSurvivesTrailingEdits(t *testing.T) {
 
 /* TestParseFingerprintMissingOrGarbled checks unmarked or malformed first lines parse to "". */
 func TestParseFingerprintMissingOrGarbled(t *testing.T) {
-	// markerPrefix reconstructs the marker's fixed prefix (marker minus hash).
 	markerPrefix := strings.TrimSuffix(markerLine("x"), "x")
 
 	cases := map[string]string{
@@ -116,8 +115,6 @@ func TestPlanActionMatrix(t *testing.T) {
 	clientNewAlias := bodyFor(t, []string{"www.example.com"}, "/var/www/example", types.ProjectTypeClient, 0)
 	apiBody := bodyFor(t, nil, "", types.ProjectTypeAPITS, 3000)
 	apiNewPort := bodyFor(t, nil, "", types.ProjectTypeAPITS, 4000)
-	// The pre-IPv6 template body (no `listen [::]:80;`) — the concrete stale
-	// body the whole change exists to fix.
 	oldTemplate := strings.Replace(clientBody, "\n    listen [::]:80;", "", 1)
 
 	tests := []struct {

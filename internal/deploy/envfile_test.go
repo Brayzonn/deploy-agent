@@ -54,7 +54,6 @@ func TestStageEnvOverlayCopiesTree(t *testing.T) {
 
 	repoDir := t.TempDir()
 	rootDest := filepath.Join(repoDir, ".env.production")
-	// A stale, over-permissive copy from a previous deploy must be replaced and tightened.
 	if err := os.WriteFile(rootDest, []byte("SECRET=stale"), 0644); err != nil {
 		t.Fatalf("could not write pre-existing env file: %v", err)
 	}

@@ -120,7 +120,7 @@ restored so the site is never left HTTPS-down.
 */
 func TestSetupEdgeRegeneratedCertbotErrorRestores(t *testing.T) {
 	stub := &edgeStub{
-		catOut:     "server {\n    listen 80;\n}", // unmarked → regenerated
+		catOut:     "server {\n    listen 80;\n}",
 		certbotOut: "some transient certbot failure",
 		certbotErr: true,
 	}
@@ -140,7 +140,7 @@ the 443 block, so carrying on would leave the site HTTPS-down.
 */
 func TestSetupEdgeRegeneratedRateLimitRestores(t *testing.T) {
 	stub := &edgeStub{
-		catOut:     "server {\n    listen 80;\n}", // unmarked → regenerated
+		catOut:     "server {\n    listen 80;\n}",
 		certbotOut: "too many certificates already issued",
 		certbotErr: true,
 	}
@@ -163,7 +163,7 @@ func TestSetupEdgeCreatedRateLimitNoRestore(t *testing.T) {
 		certbotOut: "too many certificates already issued",
 		certbotErr: true,
 	}
-	e := newEdgeExecutor(t, stub, false) // no config on disk → created
+	e := newEdgeExecutor(t, stub, false)
 
 	e.setupEdge("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "")
 

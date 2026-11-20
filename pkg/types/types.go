@@ -45,10 +45,10 @@ type RepoConfig struct {
 	PM2Ecosystem     string      `json:"pm2_ecosystem,omitempty"`
 	Domain           string      `json:"domain,omitempty"`
 	DomainAliases    []string    `json:"domain_aliases,omitempty"`
-	ServerDomain     string      `json:"server_domain,omitempty"` // fullstack API domain; defaults to "api." + Domain
+	ServerDomain     string      `json:"server_domain,omitempty"`
 	Port             int         `json:"port,omitempty"`
-	NginxMaxUploadMB int         `json:"nginx_max_upload_mb,omitempty"` // client_max_body_size for the API/Docker nginx server block; nginx's own default (1m) applies when unset
-	SpaMetaProxyPath string      `json:"spa_meta_proxy_path,omitempty"` // when set on a client/hybrid-client site, unmatched paths proxy to http://localhost:<port><path>$request_uri for server-side meta injection instead of serving index.html directly; requires port > 0
+	NginxMaxUploadMB int         `json:"nginx_max_upload_mb,omitempty"`
+	SpaMetaProxyPath string      `json:"spa_meta_proxy_path,omitempty"`
 
 	UseDocker          bool     `json:"use_docker,omitempty"`
 	DockerComposeFile  string   `json:"docker_compose_file,omitempty"`

@@ -25,7 +25,7 @@ type recorder struct {
 	catOut   string
 	failTest bool
 
-	calls []string // every command as "name arg arg..."
+	calls []string
 }
 
 func (r *recorder) run(dir, name string, args ...string) (string, error) {
@@ -130,13 +130,11 @@ symlink is left completely alone: no tee (no write) and no reload.
 */
 func TestSetupUnchangedSequence(t *testing.T) {
 	rec := &recorder{}
-	// Precompute the marked body so the scripted `cat` matches the wanted body.
 	probe := New("example.com", nil, "/var/www/html/example.com", types.ProjectTypeClient, 3000, 0, "", "", nil)
 	want, _ := probe.desiredConfig()
 	rec.catOut = markerLine(configFingerprint(want)) + "\n" + want
 
 	site := newTestSite(t, types.ProjectTypeClient, rec, true)
-	// Pre-create the symlink so EnableSite is a no-op → nothing changes.
 	if err := os.WriteFile(site.enabledPath(), []byte("link"), 0644); err != nil {
 		t.Fatalf("could not create enabled marker: %v", err)
 	}
@@ -165,7 +163,7 @@ line — what makes certbot then emit the matching [::]:443 block.
 */
 func TestSetupRegeneratedSequence(t *testing.T) {
 	rec := &recorder{}
-	rec.catOut = "server {\n    listen 80;\n}" // no marker → regenerated (adoption)
+	rec.catOut = "server {\n    listen 80;\n}"
 
 	site := newTestSite(t, types.ProjectTypeClient, rec, true)
 
@@ -204,7 +202,7 @@ Setup surfaces the error.
 */
 func TestSetupRegeneratedTestFailureRestores(t *testing.T) {
 	rec := &recorder{failTest: true}
-	rec.catOut = "server {\n    listen 80;\n}" // no marker → regenerated
+	rec.catOut = "server {\n    listen 80;\n}"
 
 	site := newTestSite(t, types.ProjectTypeClient, rec, true)
 
@@ -216,8 +214,6 @@ func TestSetupRegeneratedTestFailureRestores(t *testing.T) {
 		t.Fatalf("Outcome = %q, want regenerated", res.Outcome)
 	}
 
-	// The restore copies the backup file BACK over the live config:
-	// `sudo cp <backupPath> <availablePath>`, i.e. a call ending in the domain.
 	restored := false
 	for _, c := range rec.calls {
 		if strings.HasPrefix(c, "sudo cp ") && strings.HasSuffix(c, "/example.com") {

@@ -43,20 +43,17 @@ func TestBackupWebRoot(t *testing.T) {
 	webRoot := filepath.Join(t.TempDir(), "site")
 	c := newTestClientBuilder(t, webRoot)
 
-	// Missing web root: nothing to back up
 	got, err := c.backupWebRoot()
 	if err != nil || got != "" {
 		t.Fatalf("missing web root: got (%q, %v), want (\"\", nil)", got, err)
 	}
 
-	// Empty web root: nothing to back up
 	os.MkdirAll(webRoot, 0755)
 	got, err = c.backupWebRoot()
 	if err != nil || got != "" {
 		t.Fatalf("empty web root: got (%q, %v), want (\"\", nil)", got, err)
 	}
 
-	// Populated web root: returned path must exist and contain the site files
 	if err := os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("hi"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +77,6 @@ func TestBackupWebRootFailure(t *testing.T) {
 
 	c := newTestClientBuilder(t, webRoot)
 
-	// Make the backup parent an existing file so MkdirAll fails
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	os.WriteFile(blocker, []byte(""), 0644)
 	c.backupParent = blocker

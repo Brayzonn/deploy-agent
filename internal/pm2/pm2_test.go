@@ -118,7 +118,7 @@ func TestEnsureRunningRecreatesErroredApp(t *testing.T) {
 
 /* TestEnsureRunningGivesUp checks an app that never comes up produces an error, not an infinite loop. */
 func TestEnsureRunningGivesUp(t *testing.T) {
-	mgr, fake := newTestApp(t, "launching") // a status the state machine has no move for
+	mgr, fake := newTestApp(t, "launching")
 
 	err := mgr.EnsureRunning("", "app.js", 3)
 	if err == nil {

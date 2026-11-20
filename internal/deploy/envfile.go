@@ -84,7 +84,6 @@ func stageEnvOverlay(repoName, repoDir string, log *logger.Logger) error {
 		if err := os.WriteFile(dest, data, 0600); err != nil {
 			return err
 		}
-		// WriteFile only applies the mode on create; tighten a pre-existing copy too.
 		if err := os.Chmod(dest, 0600); err != nil {
 			return err
 		}
