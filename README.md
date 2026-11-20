@@ -24,9 +24,9 @@ The agent does not receive webhooks. A webhook server on the same machine receiv
 - Supports static frontends (`CLIENT`), Node/TypeScript backends on PM2 (`API_JS`, `API_TS`), Docker Compose apps (`DOCKER`), and fullstack repos
 - Writes an nginx configuration for each site and writes it again when the repo configuration changes
 - Gets SSL certificates from Let's Encrypt through certbot
-- Rolls back a deploy when the health check fails
-- Sends a Slack message when a deploy starts and when a deploy fails
-- Puts pushes to the same repo in a queue, so that only one deploy runs at a time
+- Rolls back a deploy when a step or the health check fails
+- Sends a Slack message when a deploy starts, when it fails, and when something needs a person
+- Puts pushes to the same repo in a queue, so that only one deploy runs at a time. A queued push that is no longer the newest commit on the branch is skipped
 - Reads the repo configuration from a JSON file, so you do not rebuild the binary to add a project
 - Puts a time limit on every command
 
@@ -97,8 +97,20 @@ GITHUB_PUSHER           pusher username
 The webhook server must also give its own environment variables to the agent, so that `SSL_EMAIL` and `SLACK_WEBHOOK_URL` reach the agent. For example, in Node:
 
 ```js
-exec(script, { env: { ...process.env, GITHUB_REPO_NAME: name /* ... */ } });
+spawn(script, [], { env: { ...process.env, GITHUB_REPO_NAME: name /* ... */ } });
 ```
+
+Use `spawn`, not `exec`. A large build can print more than the 1 MB output limit of `exec`, and `exec` then kills the agent in the middle of a deploy.
+
+The agent exits with one of these codes:
+
+| Code | Meaning | Slack alert |
+| --- | --- | --- |
+| `0` | The deploy succeeded, or the agent skipped it on purpose | None |
+| `1` | The deploy failed | The agent sends it |
+| `3` | The agent stopped before the deploy started (bad config, bad variables, or no log directory). The reason is on stderr | The webhook server must send it |
+
+Go exits with `2` when the agent panics. The webhook server must send an alert for every result other than `0` or `1`, including an agent that a signal stopped and an agent that did not start.
 
 A small Express app that tests the signature is sufficient. At startup, the agent makes sure that each value is valid. It rejects a commit hash that is not 40 characters long and a name that contains a path separator.
 
@@ -242,7 +254,7 @@ This example deploys the backend on `api.myapp.com` and the frontend on `myapp.c
 | `server_domain` | string | Backend domain for a fullstack repo. Default `api.<domain>` | No |
 | `port` | int | Port that the app listens on | Backends |
 | `nginx_max_upload_mb` | int | Upload size limit for the backend. The nginx default is 1 MB | No |
-| `health_check_url` | string | URL that the agent requests after the deploy until it returns 200 | No |
+| `health_check_url` | string | URL that the agent requests after the deploy until it returns 200. For PM2 the default is `http://<domain>/api/v1/health/simple` | Docker |
 | `health_check_timeout` | int | Seconds to wait for the health check. Default 30 | No |
 | `full_stack` | bool | Deploy the backend and the frontend from one repo | No |
 | `client_dir` | string | Frontend directory | Fullstack, Docker + client |
@@ -277,21 +289,35 @@ Each deploy copies these files into the checkout with mode 600. If an environmen
 
 | Type | Health check | If the health check fails |
 | --- | --- | --- |
-| PM2 | The process is online and the URL returns 200 | Reset to the previous commit, build, and restart |
-| Docker | The containers are healthy and the URL returns 200 | Restore the `:previous` images |
+| PM2 | The process is online and `health_check_url` (or the default URL) returns 200 | Reset to the previous commit, build, and restart |
+| Docker | The containers are healthy and `health_check_url` returns 200 | Reset to the previous commit, then restore the `:previous` images with that commit's compose file |
 | Static site | No health check | The old site stays live until the swap succeeds |
 
-The first deploy of a repo has no previous version. If it fails, the agent stops and logs that manual intervention is required.
+If a PM2 build fails, the app is not restarted, but the build already replaced `node_modules` and deleted `dist/`. The agent therefore rebuilds the previous commit, so that the running app can start again after a crash or a reboot.
+
+The "previous commit" is the last commit that deployed successfully. The agent keeps it in `/var/tmp/deployment-states/last-good-<repo>`. Because of this file, a retry of a failed commit deploys again, and a rollback never returns to a commit that failed. If a newer push for the same branch exists, the agent skips the older push. The newer push deploys instead.
+
+The first deploy of a repo has no previous version. If it fails, the agent stops and logs that manual intervention is required. For Docker, the agent also brings the stack down, because there are no previous images to start.
+
+If a rollback also fails, the Slack alert says "rollback ALSO failed" and gives the reason.
+
+If a fullstack deploy fails at the client step, the new server stays live with the old client. The alert says so.
+
+### Stopping a deploy
+
+If the agent gets `SIGTERM` or `SIGINT` (for example, Ctrl-C or a server shutdown), it stops the current step, rolls that step back, and sends a Slack alert. A second signal also stops the rollback. If the agent waits for another deploy of the same repo when the signal arrives, it keeps waiting until that deploy finishes. Then it stops and changes nothing.
 
 Rollback restores the containers but not the database. Thus each migration must be backward-compatible: the previous version of the app must work with the new schema.
 
 ## Slack Notifications
 
-If you set `SLACK_WEBHOOK_URL`, the agent sends a Slack message when a deploy starts. It also sends an alert with the error when a deploy fails. If the URL is not set, the deploy log shows a warning. A Slack error never makes a deploy fail.
+If you set `SLACK_WEBHOOK_URL`, the agent sends a Slack message when a deploy starts. It also sends an alert with the error when a deploy fails. It sends a warning when something needs a person even though the deploy continued: less than 2 GB of free disk space, or an nginx config that it could not restore. If the URL is not set, the deploy log shows a warning. A Slack error never makes a deploy fail.
 
 ## Logs
 
-Each deploy writes a log file to `~/logs/deployments/deployment_YYYYMMDD_HHMMSS_PID.log`. The agent also writes its output to the stdout of the webhook server.
+Each deploy writes a log file to `~/logs/deployments/deployment_YYYYMMDD_HHMMSS_PID.log`. The agent also writes its output to the stdout of the webhook server. The agent deletes log files that are older than 30 days.
+
+After each successful Docker deploy, the agent removes the `:previous` tags. Then it deletes untagged images (`docker image prune -f`), which includes the images that the deploy replaced, and build cache that was not used for 7 days. The images that are running keep their tags and are not deleted.
 
 ```bash
 tail -f $(ls -t ~/logs/deployments/deployment_*.log | head -1)   # follow the latest
