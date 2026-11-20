@@ -2,6 +2,7 @@ deploy-agent
 BATTLE_TESTS.md
 
 REVIEW.md
+RELIABILITY-REVIEW.md
 deployment-cmd.md
 prodconfig.json
 nestra-spa-proxy-nginx.md
