@@ -92,7 +92,10 @@ validateRepoConfig checks the shape of a repo config before it can
 steer filesystem paths: RepoDir must be absolute and traversal-free,
 web roots must live under the served parent (the same guard the
 client deployer enforces), and the project type must be one the
-executor can route. Name and DeployBranch get their defaults here.
+executor can route. Docker repos must set health_check_url: without
+it a deploy only proves each container reached "running", so one
+that crashes seconds later still passes. Name and DeployBranch get
+their defaults here.
 */
 func validateRepoConfig(repoName string, config *types.RepoConfig) error {
 	if config == nil {
@@ -129,6 +132,9 @@ func validateRepoConfig(repoName string, config *types.RepoConfig) error {
 		return fmt.Errorf("repo %q: unknown project_type %q", repoName, config.ProjectType)
 	}
 
+	if config.UseDocker && config.HealthCheckURL == "" {
+		return fmt.Errorf("repo %q: health_check_url is required when use_docker is true", repoName)
+	}
+
 	return nil
 }
-

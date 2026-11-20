@@ -73,6 +73,7 @@ func TestReposFileRejectsBadConfigs(t *testing.T) {
 		{"client web root outside served parent", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "DOCKER", "client_web_root": "/root"}}`},
 		{"name not matching key", `{"my-app": {"name": "other-app", "repo_dir": "/home/deploy/my-app", "project_type": "CLIENT"}}`},
 		{"null config", `{"my-app": null}`},
+		{"docker without health check url", `{"my-app": {"repo_dir": "/home/deploy/my-app", "project_type": "DOCKER", "use_docker": true}}`},
 	}
 
 	for _, tc := range cases {
