@@ -16,8 +16,7 @@ import (
 const (
 	defaultBackupParent = "/var/tmp/deployment-backups"
 
-	copyTimeout    = 10 * time.Minute
-	serviceTimeout = 1 * time.Minute
+	copyTimeout = 10 * time.Minute
 )
 
 type ClientBuilder struct {
@@ -267,8 +266,8 @@ func (c *ClientBuilder) swapIn(staging string) (disturbed bool, err error) {
 
 /*
 RestoreFromBackup stages a prior backup and swaps it over the
-(broken) web root the same way a deploy goes in, then restarts
-nginx to pick up the change.
+(broken) web root the same way a deploy goes in. nginx serves the
+files straight from disk, so no reload is needed.
 */
 func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	if backupDir == "" {
@@ -278,6 +277,8 @@ func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 	if err := c.validateWebRoot(); err != nil {
 		return err
 	}
+
+	defer run.EnterRollback()()
 
 	c.log.Warning("Restoring previous deployment from backup...")
 
@@ -294,37 +295,6 @@ func (c *ClientBuilder) RestoreFromBackup(backupDir string) error {
 		return fmt.Errorf("failed to swap backup into place: %w", err)
 	}
 
-	c.RestartNginx()
-
 	c.log.Success("Previous deployment restored successfully")
-	return nil
-}
-
-// ============================================================
-// Nginx
-// ============================================================
-
-/*
-RestartNginx restarts the Nginx service, trying user-level systemd,
-system-level systemd, then the sysvinit service command in turn
-until one succeeds.
-*/
-func (c *ClientBuilder) RestartNginx() error {
-	c.log.Info("Restarting Nginx...")
-
-	commands := [][]string{
-		{"systemctl", "--user", "restart", "nginx"},
-		{"systemctl", "restart", "nginx"},
-		{"service", "nginx", "restart"},
-	}
-
-	for _, cmdArgs := range commands {
-		if _, err := run.Cmd(serviceTimeout, "", cmdArgs[0], cmdArgs[1:]...); err == nil {
-			c.log.Success("Nginx restarted successfully")
-			return nil
-		}
-	}
-
-	c.log.Warning("Could not restart Nginx automatically")
 	return nil
 }

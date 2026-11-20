@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,13 @@ const (
 	transferTimeout = 10 * time.Minute
 	checkoutTimeout = 2 * time.Minute
 )
+
+/*
+ErrSuperseded means the deploy branch has moved past the requested
+commit: a newer push exists, and that push deploys the tip. Returned
+(wrapped) by SyncToCommit before it touches the checkout.
+*/
+var ErrSuperseded = errors.New("superseded by a newer push")
 
 type Repo struct {
 	repoDir string
@@ -92,6 +100,11 @@ force the branch ref to it and check it out. This handles every
 starting state the same way (wrong branch, diverged history, force-
 pushed remote, dirty tracked files). Local changes to tracked files
 are discarded; untracked files are left alone.
+
+A commit that is not the tip of origin/<branch> returns ErrSuperseded.
+flock does not wake waiters in arrival order, so queued pushes can
+arrive here out of order (or GitHub can redeliver an old webhook);
+only the tip may deploy, so production never moves backward.
 */
 func (g *Repo) SyncToCommit(commit string) error {
 	g.log.Infof("Syncing checkout to %s@%s...", g.branch, short(commit))
@@ -102,6 +115,14 @@ func (g *Repo) SyncToCommit(commit string) error {
 
 	if _, err := run.Cmd(queryTimeout, g.repoDir, "git", "cat-file", "-e", commit+"^{commit}"); err != nil {
 		return fmt.Errorf("commit %s not found after fetching origin/%s — likely removed by a force push; the push that replaced it triggers its own deploy", short(commit), g.branch)
+	}
+
+	tip, err := run.Out(queryTimeout, g.repoDir, "git", "rev-parse", "origin/"+g.branch)
+	if err != nil {
+		return fmt.Errorf("failed to read tip of origin/%s: %w", g.branch, err)
+	}
+	if tip = strings.TrimSpace(tip); tip != commit {
+		return fmt.Errorf("%w (%s is now at %s)", ErrSuperseded, g.branch, short(tip))
 	}
 
 	if output, err := run.Cmd(checkoutTimeout, g.repoDir, "git", "checkout", "-f", "-B", g.branch, commit); err != nil {

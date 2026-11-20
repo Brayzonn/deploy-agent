@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,7 +49,8 @@ func commit(t *testing.T, dir, file, content, msg string) string {
 TestSyncScenarios exercises SyncToCommit against real git repos,
 covering the deploy-target states it must handle deterministically:
 plain sync, wrong branch with dirty and untracked files, force-pushed
-remote, and a webhook commit that no longer exists.
+remote, a webhook commit that no longer exists, and a commit that a
+newer push has superseded.
 */
 func TestSyncScenarios(t *testing.T) {
 	tmp := t.TempDir()
@@ -58,7 +60,6 @@ func TestSyncScenarios(t *testing.T) {
 	}
 	defer log.Close()
 
-	// Upstream repo with main + develop
 	origin := filepath.Join(tmp, "origin")
 	os.MkdirAll(origin, 0755)
 	mustRun(t, origin, "git", "init", "-b", "main")
@@ -68,12 +69,10 @@ func TestSyncScenarios(t *testing.T) {
 	mustRun(t, origin, "git", "checkout", "main")
 	c2 := commit(t, origin, "app.txt", "v2", "c2")
 
-	// Deploy checkout
 	deployDir := filepath.Join(tmp, "deploy")
 	mustRun(t, tmp, "git", "clone", origin, deployDir)
 	g := New(deployDir, "main", log)
 
-	// 1. Plain sync to the webhook commit
 	if err := g.SyncToCommit(c2); err != nil {
 		t.Fatalf("scenario 1 (plain sync): %v", err)
 	}
@@ -81,8 +80,6 @@ func TestSyncScenarios(t *testing.T) {
 		t.Fatalf("scenario 1: HEAD = %s, want %s", got, c2)
 	}
 
-	// 2. Wrong branch checked out (the old code would have merged) + dirty
-	// tracked file + untracked file that must survive
 	mustRun(t, deployDir, "git", "checkout", "develop")
 	os.WriteFile(filepath.Join(deployDir, "app.txt"), []byte("hand-edit"), 0644)
 	os.WriteFile(filepath.Join(deployDir, ".env.production"), []byte("SECRET=1"), 0600)
@@ -108,7 +105,6 @@ func TestSyncScenarios(t *testing.T) {
 		t.Fatalf("scenario 2: untracked .env.production was destroyed: %v", err)
 	}
 
-	// 3. Force push upstream: sync to the new commit must succeed
 	mustRun(t, origin, "git", "reset", "--hard", c1)
 	c3 := commit(t, origin, "app.txt", "v3", "c3 (rewrote history)")
 	if err := g.SyncToCommit(c3); err != nil {
@@ -118,8 +114,6 @@ func TestSyncScenarios(t *testing.T) {
 		t.Fatalf("scenario 3: HEAD = %s, want %s", got, c3)
 	}
 
-	// 4. Webhook commit that no longer exists anywhere: must fail loudly,
-	// leaving the checkout untouched
 	gone := strings.Repeat("d", 40)
 	if err := g.SyncToCommit(gone); err == nil {
 		t.Fatal("scenario 4 (missing commit): expected error, got nil")
@@ -128,5 +122,13 @@ func TestSyncScenarios(t *testing.T) {
 	}
 	if got, _ := g.GetCurrentCommit(); got != c3 {
 		t.Fatalf("scenario 4: HEAD moved to %s after failed sync, want %s", got, c3)
+	}
+
+	commit(t, origin, "app.txt", "v4", "c4 (newer push)")
+	if err := g.SyncToCommit(c3); !errors.Is(err, ErrSuperseded) {
+		t.Fatalf("scenario 5 (superseded): expected ErrSuperseded, got %v", err)
+	}
+	if got, _ := g.GetCurrentCommit(); got != c3 {
+		t.Fatalf("scenario 5: HEAD moved to %s after a superseded sync, want %s", got, c3)
 	}
 }

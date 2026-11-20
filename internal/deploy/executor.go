@@ -13,6 +13,7 @@ import (
 	"github.com/Brayzonn/deploy-agent/internal/lock"
 	"github.com/Brayzonn/deploy-agent/internal/logger"
 	"github.com/Brayzonn/deploy-agent/internal/nginx"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 	"github.com/Brayzonn/deploy-agent/internal/ssl"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
 )
@@ -22,7 +23,9 @@ type Executor struct {
 	cfg        *config.Config
 	log        *logger.Logger
 	git        *git.Repo
-	prevCommit string // commit hash before sync, used for rollback
+	prevCommit string
+
+	manualActions []string
 }
 
 // ============================================================
@@ -49,9 +52,16 @@ func New(ctx *types.DeploymentContext, cfg *config.Config, log *logger.Logger) *
 Execute runs a full deployment: check the push is for the configured
 deploy branch, take the per-repo deploy lock, clone-or-validate the
 repo, force the checkout to exactly the webhook commit, then hand
-off to deploy(). Concurrent pushes serialize behind the lock and
-deploy in order. Pushes to other branches and redeliveries of the
-already-deployed commit exit successfully without deploying.
+off to deploy(). Concurrent pushes serialize behind the lock; a push
+that is no longer the branch tip by the time it gets the lock is
+skipped, since the newer push deploys the tip. Pushes to other
+branches and redeliveries of the already-deployed commit exit
+successfully without deploying.
+
+The last-good record (see state.go), not the checkout, decides both
+"already deployed" and the rollback target: a failed deploy can
+leave git on the failed commit, and that commit must neither be
+skipped on retry nor used as the version to roll back to.
 */
 func (e *Executor) Execute() error {
 	e.log.State(types.StateStarting)
@@ -71,6 +81,10 @@ func (e *Executor) Execute() error {
 	}
 	defer deployLock.Release()
 
+	if run.Stopping() {
+		return fmt.Errorf("stopped while waiting for the deploy lock, nothing was changed: %w", run.ErrInterrupted)
+	}
+
 	freshClone, err := e.git.CloneIfMissing(e.ctx.RepoFullName)
 	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
@@ -80,13 +94,27 @@ func (e *Executor) Execute() error {
 		return fmt.Errorf("git validation failed: %w", err)
 	}
 
+	lastGood, err := readLastGood(e.cfg.StateDir, e.ctx.RepoName)
+	if err != nil {
+		e.log.Warningf("Could not read last good commit: %v", err)
+	}
+	e.prevCommit = lastGood
+
 	if !freshClone {
 		if commit, err := e.git.GetCurrentCommit(); err == nil {
-			if commit == e.ctx.Commit {
+			if commit == e.ctx.Commit && (lastGood == "" || lastGood == commit) {
 				e.log.Success("Already at the requested commit. Nothing to deploy!")
 				return nil
 			}
-			e.prevCommit = commit
+			if commit == e.ctx.Commit {
+				e.log.Warning("Checkout is already at the requested commit, but it never deployed successfully — deploying again")
+			}
+			if lastGood == "" {
+				e.prevCommit = commit
+			} else if lastGood != commit {
+				e.log.Warningf("Checkout is at %.7s but the last good deploy was %.7s — rollback will return to %.7s",
+					commit, lastGood, lastGood)
+			}
 		} else {
 			e.log.Warningf("Could not capture pre-sync commit for rollback: %v", err)
 		}
@@ -101,6 +129,10 @@ func (e *Executor) Execute() error {
 
 	e.log.State(types.StateSyncing)
 	if err := e.git.SyncToCommit(e.ctx.Commit); err != nil {
+		if errors.Is(err, git.ErrSuperseded) {
+			e.log.Infof("%v — skipping; the newer push deploys it", err)
+			return nil
+		}
 		return fmt.Errorf("git sync failed: %w", err)
 	}
 
@@ -108,8 +140,18 @@ func (e *Executor) Execute() error {
 		return fmt.Errorf("env overlay staging failed: %w", err)
 	}
 
+	e.checkDiskSpace()
+
+	if err := writeLastAttempted(e.cfg.StateDir, e.ctx.RepoName, e.ctx.Commit); err != nil {
+		e.log.Warningf("Could not save last attempted commit: %v", err)
+	}
+
 	if err := e.deploy(); err != nil {
 		return err
+	}
+
+	if err := writeLastGood(e.cfg.StateDir, e.ctx.RepoName, e.ctx.Commit); err != nil {
+		e.log.Warningf("Could not save last good commit: %v", err)
 	}
 
 	e.log.State(types.StateSuccess)
@@ -129,6 +171,8 @@ checkout actually holds the previous commit afterward, so callers
 don't rebuild the failed code thinking it's the old version.
 */
 func (e *Executor) rollbackGit() bool {
+	defer run.EnterRollback()()
+
 	if e.prevCommit == "" {
 		e.log.Warning("No pre-sync commit recorded — cannot rollback git")
 		return false
@@ -145,34 +189,117 @@ rollbackServer resets git to the pre-sync commit, rebuilds, restarts
 PM2, and re-runs the health check to confirm the previous version is
 actually serving. If there is no commit to roll back to (fresh clone
 or failed capture), it stops instead of rebuilding the code that
-just failed, and says so.
+just failed, and says so. Returns an error when the rollback did not
+leave the previous version healthy.
 */
-func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir, domain string) {
+func (e *Executor) rollbackServer(builder *build.ServerBuilder, serverDir, domain string) error {
+	defer run.EnterRollback()()
+
 	e.log.Warning("Rolling back server deployment...")
 
 	if !e.rollbackGit() {
 		e.log.Error("Cannot roll back: no previous commit to return to — MANUAL INTERVENTION REQUIRED; whatever PM2 is running is still the failed deploy")
-		return
+		return fmt.Errorf("no previous commit to return to; PM2 is still running the failed deploy")
 	}
 
 	e.log.Info("Rebuilding previous version...")
 	if _, err := builder.Build(); err != nil {
 		e.log.Errorf("Rollback build failed: %v — MANUAL INTERVENTION REQUIRED", err)
-		return
+		return fmt.Errorf("rollback build failed: %w", err)
 	}
 
 	e.log.Info("Restarting PM2 with previous version...")
 	if err := builder.Deploy(serverDir); err != nil {
 		e.log.Errorf("Rollback PM2 restart failed: %v — MANUAL INTERVENTION REQUIRED", err)
-		return
+		return fmt.Errorf("rollback PM2 restart failed: %w", err)
 	}
 
 	if err := e.serverHealthCheck(domain); err != nil {
 		e.log.Errorf("Rolled-back version failed its health check too: %v — MANUAL INTERVENTION REQUIRED", err)
-		return
+		return fmt.Errorf("rolled-back version failed its health check: %w", err)
 	}
 
 	e.log.Success("Server rolled back successfully and passed health check")
+	return nil
+}
+
+/*
+restorePreviousBuild puts the live app's files back after a failed
+build. The live PM2 process runs from this same directory, and the
+failed attempt already replaced node_modules (npm ci) and deleted
+dist/ and build/ (RunBuild), so a crash, a PM2 restart, or a reboot
+hours later would find nothing to start. Resetting git and rebuilding
+the previous commit restores those files. PM2 is NOT restarted: the
+old process never stopped, and restarting it would only add risk.
+Returns an error when the files could not be restored.
+*/
+func (e *Executor) restorePreviousBuild(builder *build.ServerBuilder) error {
+	defer run.EnterRollback()()
+
+	if e.prevCommit == "" {
+		e.log.Warning("No previous commit recorded (fresh clone) — nothing to restore after the failed build")
+		return nil
+	}
+	if !e.rollbackGit() {
+		e.log.Error("Could not reset git after the failed build — MANUAL INTERVENTION REQUIRED; the live app's dist/ and node_modules may be missing and it will fail on its next restart")
+		return fmt.Errorf("git reset to %.7s failed; the live app's build output may be missing", e.prevCommit)
+	}
+
+	e.log.Info("Rebuilding the previous version so the live app's files are complete again...")
+	if _, err := builder.Build(); err != nil {
+		e.log.Errorf("Rebuild of the previous version failed: %v — MANUAL INTERVENTION REQUIRED; the live app will fail on its next restart", err)
+		return fmt.Errorf("rebuild of previous version %.7s failed: %w", e.prevCommit, err)
+	}
+
+	e.log.Success("Previous version rebuilt; the running app was not restarted")
+	return nil
+}
+
+/*
+withRollback attaches a failed rollback to the deploy error so the
+Slack failure alert shows it. With a nil rbErr it returns err
+unchanged; either way errors.Is still finds the original error.
+*/
+func withRollback(err, rbErr error) error {
+	if rbErr == nil {
+		return err
+	}
+	return fmt.Errorf("%w (rollback ALSO failed — MANUAL INTERVENTION REQUIRED: %v)", err, rbErr)
+}
+
+/*
+rollbackDocker resets git to the previous commit, then runs the
+Docker rollback, logging a failure loudly and returning the rollback
+error for withRollback.
+
+The git reset comes first so "compose up" reads the previous commit's
+compose file: with the new one, the old images would start with the
+new ports, env, commands, and volumes, a renamed service would not
+come back, and an added one would keep its new image. Resetting in
+place (rather than pointing -f at a saved copy) keeps the compose
+project name and every relative path in the file exactly as they
+were, and leaves the checkout matching what runs.
+*/
+func (e *Executor) rollbackDocker(d *build.DockerBuilder) error {
+	defer run.EnterRollback()()
+
+	if !e.rollbackGit() {
+		e.log.Warning("Rolling back containers with the NEW commit's compose file — if this commit changed it, the restored containers run the new configuration")
+	}
+
+	rbErr := d.Rollback()
+	if rbErr != nil {
+		e.log.Errorf("Docker rollback failed: %v — MANUAL INTERVENTION REQUIRED", rbErr)
+	}
+	return rbErr
+}
+
+/*
+ManualActions returns problems that need a human even though the
+deploy succeeded, for main to send to Slack as a warning.
+*/
+func (e *Executor) ManualActions() []string {
+	return e.manualActions
 }
 
 /*
@@ -212,16 +339,6 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 		return
 	}
 
-	/*
-		The deploy lock is per-repo but nginx/certbot are global server
-		state, so the whole edge step — nginx.Setup through certbot to the
-		final restore/reload — runs under the process-wide edge lock: a
-		concurrent deploy of another repo cannot reload nginx or run
-		certbot mid-regeneration. Lock ordering is deadlock-safe (per-repo
-		lock always first, in Execute; edge lock second, here) and edge
-		stays best-effort — a lock failure warns and skips, never fails
-		the deploy.
-	*/
 	edgeLock, err := lock.AcquireEdge(e.cfg.StateDir, e.log)
 	if err != nil {
 		e.log.Warningf("Skipping nginx/SSL setup — could not acquire the edge lock: %v", err)
@@ -229,12 +346,6 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 	}
 	defer edgeLock.Release()
 
-	/*
-		Create-once insurance: a domain with a DNS record pointing here but
-		no matching vhost gets a refused TLS handshake instead of another
-		site's certificate. Warn-only — the site's own edge setup proceeds
-		regardless.
-	*/
 	if err := nginx.EnsureDefaultServer(e.log); err != nil {
 		e.log.Warningf("Default TLS catch-all setup failed: %v", err)
 	}
@@ -249,22 +360,14 @@ func (e *Executor) setupEdge(domain string, aliases []string, webRoot string, pt
 	sslMgr := ssl.New(domain, aliases, e.cfg.SSLEmail, e.log)
 	sslErr := sslMgr.Setup()
 
-	/*
-		The regenerated backup lifecycle spans BOTH the nginx step and this
-		certbot step, so it is coordinated here rather than inside Setup. On
-		a regenerated config the new on-disk body has no 443 block yet and
-		nginx has NOT been reloaded (deferred-reload design); certbot is what
-		installs SSL and reloads. If certbot fails (including a rate limit),
-		restore the pre-deploy config so a live site is never left
-		HTTPS-down; on success, reload once more as an idempotent safety net
-		after certbot's own reload. The edge lock held above keeps other
-		repos' deploys away from nginx/certbot for this whole window.
-	*/
 	if res.Outcome == nginx.OutcomeRegenerated {
 		if sslErr != nil {
 			e.log.Warningf("SSL setup failed on a regenerated config for %s: %v — restoring the pre-deploy config so the site is not left HTTPS-down", domain, sslErr)
 			if restoreErr := nginxMgr.RestoreConfig(res.BackupPath); restoreErr != nil {
 				e.log.Errorf("Failed to restore nginx config from backup %s — MANUAL INTERVENTION REQUIRED: %v", res.BackupPath, restoreErr)
+				e.manualActions = append(e.manualActions, fmt.Sprintf(
+					"%s: SSL setup failed and restoring the nginx config from %s also failed (%v); the site may be HTTPS-down",
+					domain, res.BackupPath, restoreErr))
 			}
 			return
 		}
@@ -341,36 +444,19 @@ func (e *Executor) deployDocker() error {
 		e.log.State(types.StateRunningMigrations)
 		if err := dockerBuilder.StartInfra(e.ctx.Config.InfraServices); err != nil {
 			e.log.Warning("Attempting rollback after infra startup failure...")
-			dockerBuilder.Rollback()
-			return fmt.Errorf("infra startup failed: %w", err)
+			rbErr := e.rollbackDocker(dockerBuilder)
+			return withRollback(fmt.Errorf("infra startup failed: %w", err), rbErr)
 		}
 		if err := dockerBuilder.RunMigrations(e.ctx.Config.MigrationService, e.ctx.Config.MigrationCommand); err != nil {
 			e.log.Warning("Attempting rollback after migration failure...")
 			e.log.Warning("Database may be PARTIALLY MIGRATED — rollback restores containers, not schema; verify migration state manually")
-			dockerBuilder.Rollback()
-			return fmt.Errorf("migrations failed: %w", err)
+			rbErr := e.rollbackDocker(dockerBuilder)
+			return withRollback(fmt.Errorf("migrations failed: %w", err), rbErr)
 		}
 		migrationsRan = true
 		e.log.Success("Database migrations completed")
 	}
 
-	/*
-		clientDeploysFirst: a repo with SpaMetaProxyPath set expects its
-		Docker service to bind-mount the client's web root (to read
-		index.html for meta injection), and a bind mount locks onto
-		whatever directory exists at container-start time. deployClient's
-		swap replaces that directory outright, so a container already
-		running when the swap happens is left with a mount pointing at
-		the directory the swap just replaced — and Compose's own "up -d"
-		won't fix that on its own: it only recreates a container when it
-		detects an image/config diff, and a directory swap under an
-		unchanged bind-mount source is invisible to that diff. Deploying
-		the client first, then force-recreating the service below,
-		guarantees the container's mount is always established fresh
-		against the just-swapped directory. Every other Docker+client
-		repo keeps today's order and Compose's normal change detection —
-		this only applies to repos that opted into the coupling.
-	*/
 	clientDeploysFirst := e.ctx.Config.ClientWebRoot != "" && e.ctx.Config.SpaMetaProxyPath != ""
 
 	if clientDeploysFirst {
@@ -397,8 +483,8 @@ func (e *Executor) deployDocker() error {
 		if clientDeploysFirst {
 			e.log.Warning("Client was already deployed before this failure — rolled-back containers will run OLD server code against the NEW client build; this only works if the two are backward-compatible")
 		}
-		dockerBuilder.Rollback()
-		return fmt.Errorf("docker deployment failed: %w", err)
+		rbErr := e.rollbackDocker(dockerBuilder)
+		return withRollback(fmt.Errorf("docker deployment failed: %w", err), rbErr)
 	}
 
 	e.setupEdge(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB, "")
@@ -426,8 +512,8 @@ func (e *Executor) deployDocker() error {
 			if clientDeploysFirst {
 				e.log.Warning("Client was already deployed before this failure — rolled-back containers will run OLD server code against the NEW client build; this only works if the two are backward-compatible")
 			}
-			dockerBuilder.Rollback()
-			return fmt.Errorf("docker deployment failed health check: %w", err)
+			rbErr := e.rollbackDocker(dockerBuilder)
+			return withRollback(fmt.Errorf("docker deployment failed health check: %w", err), rbErr)
 		}
 		e.log.Success("HTTP health check passed")
 	}
@@ -478,7 +564,8 @@ func (e *Executor) deployClient(domain string, aliases []string, webRoot string)
 		if backupDir != "" {
 			e.log.Warning("Client deployment failed, attempting to restore backup...")
 			if restoreErr := clientBuilder.RestoreFromBackup(backupDir); restoreErr != nil {
-				e.log.Errorf("Backup restore failed: %v", restoreErr)
+				e.log.Errorf("Backup restore failed: %v — MANUAL INTERVENTION REQUIRED", restoreErr)
+				return withRollback(fmt.Errorf("client deployment failed: %w", err), restoreErr)
 			}
 		}
 		return fmt.Errorf("client deployment failed: %w", err)
@@ -512,22 +599,22 @@ func (e *Executor) deployServer(domain string, aliases []string) error {
 
 	buildResult, err := serverBuilder.Build()
 	if err != nil {
-		e.rollbackGit()
-		return fmt.Errorf("server build failed: %w", err)
+		rbErr := e.restorePreviousBuild(serverBuilder)
+		return withRollback(fmt.Errorf("server build failed: %w", err), rbErr)
 	}
 
 	e.setupEdge(domain, aliases, "", e.ctx.Config.ProjectType, e.ctx.Config.Port, e.ctx.Config.NginxMaxUploadMB, "")
 
 	if err := serverBuilder.Deploy(serverDir); err != nil {
-		e.rollbackServer(serverBuilder, serverDir, domain)
-		return fmt.Errorf("server deployment failed: %w", err)
+		rbErr := e.rollbackServer(serverBuilder, serverDir, domain)
+		return withRollback(fmt.Errorf("server deployment failed: %w", err), rbErr)
 	}
 
 	e.log.Infof("Server build completed in %v", buildResult.Duration)
 
 	if err := e.serverHealthCheck(domain); err != nil {
-		e.rollbackServer(serverBuilder, serverDir, domain)
-		return fmt.Errorf("deployment health check failed: %w", err)
+		rbErr := e.rollbackServer(serverBuilder, serverDir, domain)
+		return withRollback(fmt.Errorf("deployment health check failed: %w", err), rbErr)
 	}
 
 	return nil
@@ -554,7 +641,8 @@ func (e *Executor) deployFullstack() error {
 
 	e.log.Info("Step 2/2: Deploying client...")
 	if err := e.deployClient(e.ctx.Config.Domain, e.ctx.Config.DomainAliases, e.ctx.Config.WebRoot); err != nil {
-		return err
+		e.log.Warning("Client deploy failed after the NEW server went live — it now runs with the OLD client; this only works if the two are backward-compatible")
+		return fmt.Errorf("%w (the new server stays live with the old client)", err)
 	}
 
 	e.log.Success("Fullstack deployment completed successfully!")

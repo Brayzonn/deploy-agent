@@ -22,7 +22,9 @@ type DeployLock struct {
 Acquire takes an exclusive flock on <stateDir>/deploy-<repo>.lock so
 only one deployment per repo runs at a time. If another deployment
 holds the lock, it logs and blocks until that one finishes, so rapid
-successive pushes deploy serially with the last one winning.
+successive pushes deploy serially. Waiters do NOT wake in arrival
+order; git.SyncToCommit skips any push that is no longer the branch
+tip, which is what keeps the newest commit the one that ends up live.
 */
 func Acquire(stateDir, repoName string, log *logger.Logger) (*DeployLock, error) {
 	return acquire(stateDir,

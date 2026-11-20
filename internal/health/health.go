@@ -7,6 +7,7 @@ import (
 
 	"github.com/Brayzonn/deploy-agent/internal/logger"
 	"github.com/Brayzonn/deploy-agent/internal/pm2"
+	"github.com/Brayzonn/deploy-agent/internal/run"
 	"github.com/Brayzonn/deploy-agent/pkg/types"
 )
 
@@ -94,6 +95,9 @@ func (h *HealthChecker) CheckHTTP() error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("HTTP check failed after %s: %w", h.timeout, lastErr)
 		}
+		if run.Stopping() {
+			return fmt.Errorf("HTTP check stopped (last result: %v): %w", lastErr, run.ErrInterrupted)
+		}
 
 		h.log.Infof("HTTP check attempt %d failed (%v), retrying in 2s...", attempt, lastErr)
 		time.Sleep(2 * time.Second)
@@ -147,7 +151,7 @@ func (h *HealthChecker) Check() error {
 			return err
 		}
 
-	default: // server
+	default:
 		if err := h.CheckPM2(); err != nil {
 			return err
 		}

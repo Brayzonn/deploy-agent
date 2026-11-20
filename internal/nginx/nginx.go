@@ -271,6 +271,8 @@ failing at a later step: restoring the file and reloading is correct
 regardless of where in the certbot round-trip the failure happened.
 */
 func (n *Site) RestoreConfig(backupPath string) error {
+	defer run.EnterRollback()()
+
 	n.log.Warningf("Restoring nginx config for %s from backup %s", n.domain, backupPath)
 
 	if output, err := run.Cmd(nginxTimeout, "", "sudo", "cp", backupPath, n.availablePath()); err != nil {

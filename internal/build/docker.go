@@ -22,6 +22,10 @@ const (
 	migrationTimeout   = 10 * time.Minute
 )
 
+// buildCacheMaxAge is how long unused build cache is kept (Go duration
+// syntax, which docker's "until" filter accepts).
+const buildCacheMaxAge = "168h"
+
 type DockerBuilder struct {
 	repoName    string
 	workDir     string
@@ -40,9 +44,9 @@ and the safety tag keeping that ID alive.
 */
 type previousImage struct {
 	service   string
-	imageName string // reference compose resolves for this service, e.g. "example_api:latest"
-	imageID   string // image ID running before this deploy
-	prevTag   string // safety tag holding imageID, e.g. "example-api:previous"
+	imageName string
+	imageID   string
+	prevTag   string
 }
 
 // ============================================================
@@ -388,6 +392,9 @@ func (d *DockerBuilder) waitForServices(services []string, timeout time.Duration
 		if time.Now().After(deadline) {
 			return fmt.Errorf("containers not ready after %s: %s", timeout, strings.Join(pending, ", "))
 		}
+		if run.Stopping() {
+			return fmt.Errorf("stopped waiting for containers: %w", run.ErrInterrupted)
+		}
 
 		time.Sleep(2 * time.Second)
 	}
@@ -494,7 +501,6 @@ func (d *DockerBuilder) Rollback() error {
 		return fmt.Errorf("failed to bring up previous containers: %w\nOutput: %s", err, output)
 	}
 
-	// Keep the :previous tags around for manual recovery if verification fails.
 	if err := d.verifyRollback(); err != nil {
 		return fmt.Errorf("rollback verification failed: %w", err)
 	}
@@ -540,10 +546,34 @@ func (d *DockerBuilder) verifyRollback() error {
 	return nil
 }
 
-/* CleanupOnSuccess removes the ":previous" tags after a successful deployment. */
+/*
+CleanupOnSuccess removes the ":previous" tags after a successful
+deployment, then prunes disk space the deploy freed up.
+*/
 func (d *DockerBuilder) CleanupOnSuccess() {
 	if len(d.prevImages) > 0 {
 		d.log.Info("Cleaning up previous image tags...")
 		d.cleanPreviousTags()
+	}
+	d.pruneDisk()
+}
+
+/*
+pruneDisk frees the space each deploy leaves behind. Every build
+leaves the replaced image untagged ("dangling"), and the build cache
+grows without limit; on a small VPS both eventually fill the disk.
+Only dangling images are removed — anything tagged, including other
+repos' ":previous" rollback tags, is untouched — and only build cache
+unused for a week. The age filter works on every Docker version,
+unlike the size flags, which changed in Docker 28. Failures only
+warn: the deploy already succeeded.
+*/
+func (d *DockerBuilder) pruneDisk() {
+	d.log.Info("Pruning dangling images and old build cache...")
+	if output, err := run.Cmd(stackTimeout, d.workDir, "docker", "image", "prune", "-f"); err != nil {
+		d.log.Warningf("Image prune failed: %v\nOutput: %s", err, output)
+	}
+	if output, err := run.Cmd(stackTimeout, d.workDir, "docker", "builder", "prune", "-f", "--filter", "until="+buildCacheMaxAge); err != nil {
+		d.log.Warningf("Build cache prune failed: %v\nOutput: %s", err, output)
 	}
 }
